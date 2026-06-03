@@ -1,14 +1,14 @@
+pub mod deepseek;
 mod error;
-pub use error::LlmError;
-
-pub mod types;
-
+pub mod openai;
 pub mod provider;
 pub mod stream_handle;
-pub mod openai;
+pub mod types;
 
+pub use error::LlmError;
 pub use provider::Provider;
 pub use stream_handle::StreamHandle;
+pub use types::*;
 
 pub fn _check() {}
 
@@ -207,5 +207,11 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], Ok(StreamEvent::ContentStart { index: 0, kind: ContentKind::Text })));
         assert!(matches!(&events[1], Ok(StreamEvent::TextDelta { index: 0, .. })));
+    }
+
+    #[test]
+    fn deepseek_factory_returns_openai_provider() {
+        use openai::OpenAIProvider;
+        let _p: OpenAIProvider = deepseek::client("test-key");
     }
 }
