@@ -105,6 +105,11 @@ mod tests {
     }
 
     #[test]
+    fn openai_provider_builds() {
+        let _p = openai::OpenAIProvider::builder("test-key").build();
+    }
+
+    #[test]
     fn oai_response_deserializes() {
         use openai::schema::{OaiResponse, OaiContent};
         let json = r#"{
