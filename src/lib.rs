@@ -5,6 +5,7 @@ mod types;
 
 pub mod provider;
 pub mod stream_handle;
+pub mod openai;
 
 pub use provider::Provider;
 pub use stream_handle::StreamHandle;
@@ -101,5 +102,32 @@ mod tests {
         use provider::Provider;
         // Verify we can box the trait
         fn _accepts(_p: Box<dyn Provider>) {}
+    }
+
+    #[test]
+    fn oai_response_deserializes() {
+        use openai::schema::{OaiResponse, OaiContent};
+        let json = r#"{
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "created": 1700000000,
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "Hello"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 3,
+                "total_tokens": 8
+            }
+        }"#;
+        let resp: OaiResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.id, "chatcmpl-1");
+        match &resp.choices[0].message.content {
+            Some(OaiContent::Text(text)) => assert_eq!(text, "Hello"),
+            _ => panic!("Expected text content"),
+        }
     }
 }
