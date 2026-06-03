@@ -3,6 +3,12 @@ pub use error::LlmError;
 
 mod types;
 
+pub mod provider;
+pub mod stream_handle;
+
+pub use provider::Provider;
+pub use stream_handle::StreamHandle;
+
 pub fn _check() {}
 
 #[cfg(test)]
@@ -88,5 +94,12 @@ mod tests {
             stop_reason: StopReason::EndTurn,
             usage: Usage::default(),
         };
+    }
+
+    #[test]
+    fn provider_is_object_safe() {
+        use provider::Provider;
+        // Verify we can box the trait
+        fn _accepts(_p: Box<dyn Provider>) {}
     }
 }
