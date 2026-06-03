@@ -12,6 +12,7 @@
     "prompt_tokens": 10,
     "completion_tokens": 9,
     "total_tokens": 19,
-    "prompt_tokens_details": {"cached_tokens": 5}
+    "prompt_tokens_details": {"cached_tokens": 5},
+    "prompt_cache_hit_tokens": 5
   }
 }
