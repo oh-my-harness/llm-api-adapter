@@ -179,4 +179,28 @@ mod tests {
         assert_eq!(canon.usage.input_tokens, 10);
         assert_eq!(canon.usage.output_tokens, 5);
     }
+
+    #[test]
+    fn oai_stream_parser_emits_events() {
+        use openai::stream::process_chunk;
+        use openai::schema::{OaiChunk, OaiStreamChoice, OaiDelta};
+        use types::{StreamEvent, ContentKind};
+
+        let mut state = openai::stream::OaiStreamState::new();
+
+        let chunk = OaiChunk {
+            id: "c1".into(),
+            model: "gpt-4o".into(),
+            choices: vec![OaiStreamChoice {
+                delta: OaiDelta { content: Some("Hello".into()), ..Default::default() },
+                finish_reason: None,
+            }],
+            usage: None,
+        };
+        let events = process_chunk(&mut state, chunk, false);
+        // First content delta should emit ContentStart then TextDelta
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], Ok(StreamEvent::ContentStart { index: 0, kind: ContentKind::Text })));
+        assert!(matches!(&events[1], Ok(StreamEvent::TextDelta { index: 0, .. })));
+    }
 }
