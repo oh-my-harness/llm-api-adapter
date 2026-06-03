@@ -30,4 +30,17 @@ mod tests {
         });
         let _reasoning = ResponseContent::Reasoning("my reasoning".into());
     }
+
+    #[test]
+    fn message_variants() {
+        use types::{Message, RequestContent, ResponseContent};
+        let _sys = Message::System("Be helpful".into());
+        let _user = Message::User(vec![RequestContent::Text("Hi".into())]);
+        let _asst = Message::Assistant(vec![ResponseContent::Text("Hello!".into())]);
+        let _tool = Message::Tool {
+            invocation_id: "call_1".into(),
+            content: vec![RequestContent::Text("22°C".into())],
+            is_error: false,
+        };
+    }
 }
