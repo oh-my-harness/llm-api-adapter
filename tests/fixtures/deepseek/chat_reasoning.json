@@ -1,0 +1,16 @@
+{
+  "id": "chatcmpl-ds-reason",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "deepseek-v4-flash",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "The answer is 42.",
+      "reasoning_content": "Let me think step by step. Based on my reasoning, the answer is 42."
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 15, "completion_tokens": 8, "total_tokens": 23, "prompt_cache_hit_tokens": 0, "prompt_cache_miss_tokens": 15}
+}

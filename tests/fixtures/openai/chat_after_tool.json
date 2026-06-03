@@ -1,0 +1,12 @@
+{
+  "id": "chatcmpl-after123",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "gpt-4o",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "The weather in Paris is sunny and 22°C."},
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 80, "completion_tokens": 15, "total_tokens": 95}
+}

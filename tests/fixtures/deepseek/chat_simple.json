@@ -1,0 +1,12 @@
+{
+  "id": "chatcmpl-ds-simple",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "deepseek-v4-flash",
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": "Hello from DeepSeek!"},
+    "finish_reason": "stop"
+  }],
+  "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10, "prompt_cache_hit_tokens": 0, "prompt_cache_miss_tokens": 5}
+}
