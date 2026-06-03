@@ -43,4 +43,20 @@ mod tests {
             is_error: false,
         };
     }
+
+    #[test]
+    fn chat_request_builder() {
+        use types::{ChatRequest, Message, RequestContent, ToolChoice};
+        let req = ChatRequest::builder("gpt-4o", 1024)
+            .message(Message::System("You are helpful.".into()))
+            .message(Message::User(vec![RequestContent::Text("Hello".into())]))
+            .temperature(0.7)
+            .build();
+
+        assert_eq!(req.model(), "gpt-4o");
+        assert_eq!(req.params().max_tokens, 1024);
+        assert_eq!(req.params().temperature, Some(0.7));
+        assert_eq!(req.messages().len(), 2);
+        assert!(matches!(req.tool_choice(), ToolChoice::Auto));
+    }
 }
