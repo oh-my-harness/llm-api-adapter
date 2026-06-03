@@ -169,6 +169,8 @@ pub enum ToolChoice {
 
 `SamplingParams` 仅含三家真正共有的参数。`top_k`、`seed`、`frequency_penalty` 等 provider 特有参数归入各自扩展类型。
 
+`ChatRequest`、`SamplingParams`、`AnthropicExt`、`OpenAIExt` 均通过 **builder pattern** 构造，不暴露 struct literal 构造方式。新增可选字段时只需加新 builder 方法，不产生 breaking change。
+
 ### 3.4 响应
 
 ```rust
@@ -437,7 +439,21 @@ pub enum LlmError {
 cargo test --features integration
 ```
 
-需要环境变量：`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY`
+每家 provider 支持三个环境变量：
+
+| 变量 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `OPENAI_API_KEY` | ✅ | — | API key |
+| `OPENAI_BASE_URL` | ❌ | `https://api.openai.com` | 可指向代理或本地服务 |
+| `OPENAI_MODEL` | ❌ | `gpt-4o` | 测试用模型名 |
+| `ANTHROPIC_API_KEY` | ✅ | — | API key |
+| `ANTHROPIC_BASE_URL` | ❌ | `https://api.anthropic.com` | 可指向代理或本地服务 |
+| `ANTHROPIC_MODEL` | ❌ | `claude-sonnet-4-6` | 测试用模型名 |
+| `DEEPSEEK_API_KEY` | ✅ | — | API key |
+| `DEEPSEEK_BASE_URL` | ❌ | `https://api.deepseek.com` | 可指向代理或本地服务 |
+| `DEEPSEEK_MODEL` | ❌ | `deepseek-v4-flash` | 测试用模型名 |
+
+未设置 `*_API_KEY` 的 provider，其集成测试自动跳过（不报错）。
 
 ### 每家 Provider 必须覆盖的场景
 
