@@ -1,7 +1,7 @@
 mod error;
 pub use error::LlmError;
 
-mod types;
+pub mod types;
 
 pub mod provider;
 pub mod stream_handle;
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn chat_response_helpers() {
-        use types::{ChatResponse, ResponseContent, StopReason, ToolInvocation, Usage};
+        use types::{ChatResponse, ResponseContent, StopReason, Usage};
         let resp = ChatResponse {
             id: "msg_1".into(),
             model: "gpt-4o".into(),
@@ -129,5 +129,54 @@ mod tests {
             Some(OaiContent::Text(text)) => assert_eq!(text, "Hello"),
             _ => panic!("Expected text content"),
         }
+    }
+
+    #[test]
+    fn convert_simple_request_to_oai() {
+        use openai::convert::to_oai;
+        use types::{ChatRequest, Message, RequestContent};
+        let req = ChatRequest::builder("gpt-4o", 512)
+            .message(Message::System("You are helpful.".into()))
+            .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+            .temperature(0.5)
+            .build();
+        let oai = to_oai(&req, None, false).unwrap();
+        assert_eq!(oai.model, "gpt-4o");
+        assert_eq!(oai.max_tokens, 512);
+        assert_eq!(oai.temperature, Some(0.5));
+        assert_eq!(oai.messages.len(), 2);
+        assert_eq!(oai.messages[0].role, "system");
+        assert_eq!(oai.messages[1].role, "user");
+    }
+
+    #[test]
+    fn convert_oai_response_to_canonical() {
+        use openai::{convert::from_oai, schema::{OaiResponse, OaiChoice, OaiMessage, OaiUsage}};
+        use types::StopReason;
+        let resp = OaiResponse {
+            id: "chatcmpl-1".into(),
+            model: "gpt-4o".into(),
+            choices: vec![OaiChoice {
+                message: OaiMessage {
+                    role: "assistant".into(),
+                    content: Some(openai::schema::OaiContent::Text("Hello!".into())),
+                    tool_calls: vec![],
+                    tool_call_id: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".into()),
+            }],
+            usage: Some(OaiUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                ..Default::default()
+            }),
+        };
+        let canon = from_oai(resp, false).unwrap();
+        assert_eq!(canon.id, "chatcmpl-1");
+        assert_eq!(canon.text(), "Hello!");
+        assert!(matches!(canon.stop_reason, StopReason::EndTurn));
+        assert_eq!(canon.usage.input_tokens, 10);
+        assert_eq!(canon.usage.output_tokens, 5);
     }
 }

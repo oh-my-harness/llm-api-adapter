@@ -53,7 +53,7 @@ pub(crate) struct OaiStreamOptions {
 }
 
 /// A message in the conversation.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct OaiMessage {
     /// Role: "system", "user", "assistant", or "tool".
     pub role: String,
@@ -72,7 +72,7 @@ pub(crate) struct OaiMessage {
 }
 
 /// Message content: either a single string or array of content parts.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum OaiContent {
     /// Simple text string.
@@ -82,7 +82,7 @@ pub(crate) enum OaiContent {
 }
 
 /// A single content part in a multipart message.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum OaiContentPart {
     /// Text content.
@@ -92,7 +92,7 @@ pub(crate) enum OaiContentPart {
 }
 
 /// Image URL metadata.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct OaiImageUrl {
     /// The image URL.
     pub url: String,
@@ -141,7 +141,7 @@ pub(crate) struct OaiToolCallFunction {
 // ── Response ─────────────────────────────────────────────────────────────────
 
 /// OpenAI Chat Completions API response (non-streaming).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct OaiResponse {
     /// Response ID.
     pub id: String,
@@ -155,7 +155,7 @@ pub(crate) struct OaiResponse {
 }
 
 /// A completion choice.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct OaiChoice {
     /// The generated message.
     pub message: OaiMessage,
@@ -164,7 +164,7 @@ pub(crate) struct OaiChoice {
 }
 
 /// Token usage statistics.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub(crate) struct OaiUsage {
     /// Number of tokens in the prompt.
     pub prompt_tokens: u32,
@@ -179,7 +179,7 @@ pub(crate) struct OaiUsage {
 }
 
 /// Detailed breakdown of prompt tokens.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub(crate) struct OaiPromptTokensDetails {
     /// Number of cached prompt tokens (if using prompt caching).
     #[serde(default)]
