@@ -74,11 +74,11 @@ async fn stream_tool_call_collects_invocation() {
         .message(Message::User(vec![RequestContent::Text(
             "Weather in Paris?".into(),
         )]))
-        .tool(ToolDef {
-            name: "get_weather".into(),
-            description: "Get weather".into(),
-            input_schema: serde_json::json!({}),
-        })
+        .tool(ToolDef::new(
+            "get_weather",
+            "Get weather",
+            serde_json::json!({}),
+        ))
         .build();
 
     let handle = provider(&server).chat_stream(&req).await.unwrap();

@@ -94,15 +94,15 @@ async fn integration_multi_turn() {
 }
 
 fn weather_tool() -> ToolDef {
-    ToolDef {
-        name: "get_weather".into(),
-        description: "Get current weather for a city.".into(),
-        input_schema: serde_json::json!({
+    ToolDef::new(
+        "get_weather",
+        "Get current weather for a city.",
+        serde_json::json!({
             "type": "object",
             "properties": {"location": {"type": "string"}},
             "required": ["location"],
         }),
-    }
+    )
 }
 
 #[tokio::test]

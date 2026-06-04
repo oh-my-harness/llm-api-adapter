@@ -37,11 +37,11 @@ async fn chat_returns_tool_call() {
     )
     .await;
 
-    let tool = ToolDef {
-        name: "get_weather".into(),
-        description: "Get current weather for a city.".into(),
-        input_schema: serde_json::json!({"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}),
-    };
+    let tool = ToolDef::new(
+        "get_weather",
+        "Get current weather for a city.",
+        serde_json::json!({"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}),
+    );
     let req = ChatRequest::builder("deepseek-v4-flash", 256)
         .message(Message::User(vec![RequestContent::Text(
             "What is the weather in Paris?".into(),
@@ -88,11 +88,11 @@ async fn multi_turn_tool_call() {
     )])];
     let req1 = ChatRequest::builder("deepseek-v4-flash", 256)
         .messages(messages.clone())
-        .tool(ToolDef {
-            name: "get_weather".into(),
-            description: "Get weather".into(),
-            input_schema: serde_json::json!({}),
-        })
+        .tool(ToolDef::new(
+            "get_weather",
+            "Get weather",
+            serde_json::json!({}),
+        ))
         .build();
     let resp1 = p.chat(&req1).await.unwrap();
     assert!(matches!(resp1.stop_reason, StopReason::ToolUse));

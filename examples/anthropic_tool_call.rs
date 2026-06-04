@@ -26,15 +26,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .messages_path(messages_path)
         .build();
 
-    let weather_tool = ToolDef {
-        name: "get_weather".into(),
-        description: "Get current weather for a city.".into(),
-        input_schema: json!({
+    let weather_tool = ToolDef::new(
+        "get_weather",
+        "Get current weather for a city.",
+        json!({
             "type": "object",
             "properties": {"location": {"type": "string"}},
             "required": ["location"],
         }),
-    };
+    );
 
     // --- Turn 1: ask, expect a tool call ---
     let req1 = ChatRequest::builder(&model, 512)
