@@ -152,6 +152,7 @@ pub(crate) struct AnthropicTool {
 
 /// Anthropic Messages API response (non-streaming).
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // response_type, role, stop_sequence kept for wire schema fidelity
 pub(crate) struct AnthropicResponse {
     /// Response ID (e.g., "msg_01...").
     pub id: String,
