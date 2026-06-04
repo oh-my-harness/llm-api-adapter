@@ -9,12 +9,14 @@ use crate::{error::LlmError, provider::Provider, stream_handle::StreamHandle, ty
 use std::time::Duration;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
+const DEFAULT_CHAT_PATH: &str = "/v1/chat/completions";
 
 /// OpenAI (and OpenAI-compatible) provider, constructed via `OpenAIProvider::builder`.
 pub struct OpenAIProvider {
     client: reqwest::Client,
     api_key: String,
     base_url: String,
+    chat_path: String,
     parse_reasoning_content: bool,
 }
 
@@ -22,6 +24,7 @@ pub struct OpenAIProvider {
 pub struct OpenAIProviderBuilder {
     api_key: String,
     base_url: String,
+    chat_path: String,
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
 }
@@ -32,6 +35,7 @@ impl OpenAIProvider {
         OpenAIProviderBuilder {
             api_key: api_key.into(),
             base_url: DEFAULT_BASE_URL.to_string(),
+            chat_path: DEFAULT_CHAT_PATH.to_string(),
             parse_reasoning_content: false,
             tolerant_keepalive: false,
         }
@@ -46,7 +50,7 @@ impl OpenAIProvider {
         oai_req: &schema::OaiRequest,
         _stream: bool,
     ) -> Result<reqwest::Response, LlmError> {
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let url = format!("{}{}", self.base_url.trim_end_matches('/'), self.chat_path);
         let body = serde_json::to_string(oai_req)?;
 
         let req = self.client.post(&url)
@@ -124,6 +128,15 @@ impl OpenAIProviderBuilder {
         self
     }
 
+    /// Override the chat completions path appended to `base_url`
+    /// (default: "/v1/chat/completions"). Useful for OpenAI-compatible
+    /// gateways with non-standard paths, e.g. GitHub Models uses
+    /// "/chat/completions" (no `/v1`).
+    pub fn chat_path(mut self, path: impl Into<String>) -> Self {
+        self.chat_path = path.into();
+        self
+    }
+
     /// Enable parsing of DeepSeek reasoning_content from responses.
     pub fn parse_reasoning_content(mut self, v: bool) -> Self {
         self.parse_reasoning_content = v;
@@ -142,6 +155,7 @@ impl OpenAIProviderBuilder {
             client: reqwest::Client::new(),
             api_key: self.api_key,
             base_url: self.base_url,
+            chat_path: self.chat_path,
             parse_reasoning_content: self.parse_reasoning_content,
         }
     }
