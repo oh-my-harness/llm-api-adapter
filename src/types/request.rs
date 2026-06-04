@@ -1,6 +1,7 @@
 use super::message::Message;
 
 /// Definition of a callable tool.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolDef {
     /// Unique tool name.
