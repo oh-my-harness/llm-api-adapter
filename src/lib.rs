@@ -1,3 +1,4 @@
+pub mod anthropic;
 pub mod deepseek;
 mod error;
 pub mod openai;
