@@ -273,7 +273,7 @@ fn message_to_oai(msg: &Message) -> Result<OaiMessage, LlmError> {
                             },
                         });
                     }
-                    ResponseContent::Reasoning(r) => {
+                    ResponseContent::Reasoning { text: r, .. } => {
                         reasoning_text = Some(r.clone());
                     }
                 }
@@ -404,7 +404,10 @@ fn oai_message_to_content(
 
     // Add reasoning if present and enabled
     if parse_reasoning && let Some(reasoning) = msg.reasoning_content {
-        content.push(ResponseContent::Reasoning(reasoning));
+        content.push(ResponseContent::Reasoning {
+            text: reasoning,
+            signature: None,
+        });
     }
 
     // Add text content if present

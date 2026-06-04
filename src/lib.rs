@@ -34,7 +34,23 @@ mod tests {
             name: "fn".into(),
             input: serde_json::json!({"key": "val"}),
         });
-        let _reasoning = ResponseContent::Reasoning("my reasoning".into());
+        let _reasoning = ResponseContent::Reasoning {
+            text: "my reasoning".into(),
+            signature: None,
+        };
+    }
+
+    #[test]
+    fn reasoning_content_carries_signature() {
+        use types::ResponseContent;
+        let _with_sig = ResponseContent::Reasoning {
+            text: "thinking".into(),
+            signature: Some("sig123".into()),
+        };
+        let _without_sig = ResponseContent::Reasoning {
+            text: "thinking".into(),
+            signature: None,
+        };
     }
 
     #[test]

@@ -15,6 +15,68 @@ const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const DEFAULT_MESSAGES_PATH: &str = "/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// The native (non-streaming) Anthropic response, returned by [`AnthropicProvider::chat_native()`].
+///
+/// Use [`into_canonical()`](Self::into_canonical) to get a [`ChatResponse`] (thinking
+/// signatures are stripped).  Use [`into_message()`](Self::into_message) to get a
+/// [`Message::Assistant`] with signatures preserved, suitable for multi-turn extended
+/// thinking conversations.
+///
+/// # Limitations
+///
+/// Only non-streaming responses preserve thinking signatures. Streaming responses
+/// ([`chat_stream_native()`](AnthropicProvider::chat_stream_native)) produce `Reasoning`
+/// blocks with `signature: None`, and are therefore **not** suitable for multi-turn
+/// extended thinking. Use `chat_native()` when you need signature round-trips.
+pub struct AnthropicNativeResponse {
+    inner: ChatResponse,
+}
+
+impl AnthropicNativeResponse {
+    pub(crate) fn from_wire(wire: schema::AnthropicResponse) -> Result<Self, LlmError> {
+        Ok(Self {
+            inner: convert::from_anthropic(wire)?,
+        })
+    }
+
+    /// Convert to a `ChatResponse`, dropping thinking signatures.
+    pub fn into_canonical(self) -> ChatResponse {
+        let content = self
+            .inner
+            .content
+            .into_iter()
+            .map(|c| match c {
+                ResponseContent::Reasoning { text, .. } => ResponseContent::Reasoning {
+                    text,
+                    signature: None,
+                },
+                other => other,
+            })
+            .collect();
+        ChatResponse {
+            content,
+            ..self.inner
+        }
+    }
+
+    /// Convert to `Message::Assistant`, preserving thinking signatures for multi-turn.
+    ///
+    /// # Preconditions
+    ///
+    /// The subsequent request must have `thinking` enabled via
+    /// [`AnthropicExtBuilder::thinking`] (crate::anthropic::AnthropicExtBuilder::thinking).
+    /// Sending a `Thinking` block to the Anthropic API when thinking is not enabled will
+    /// result in a `400` error.
+    pub fn into_message(self) -> Message {
+        Message::Assistant(self.inner.content)
+    }
+
+    /// Access the underlying `ChatResponse` (signatures preserved as-is).
+    pub fn as_response(&self) -> &ChatResponse {
+        &self.inner
+    }
+}
+
 /// Anthropic Messages API provider, constructed via `AnthropicProvider::builder`.
 pub struct AnthropicProvider {
     client: reqwest::Client,
@@ -108,14 +170,22 @@ impl AnthropicProvider {
     /// Accepts `AnthropicRequest` (a `ChatRequest` paired with `AnthropicExt`) so
     /// callers can opt into provider-specific extensions — top_k, thinking,
     /// metadata, cache_hints, etc.
-    pub async fn chat_native(&self, req: &AnthropicRequest) -> Result<ChatResponse, LlmError> {
+    pub async fn chat_native(
+        &self,
+        req: &AnthropicRequest,
+    ) -> Result<AnthropicNativeResponse, LlmError> {
         let wire_req = convert::to_anthropic(&req.base, Some(&req.ext), false)?;
         let response = self.send(&wire_req, false).await?;
         let wire_resp = response.json::<schema::AnthropicResponse>().await?;
-        convert::from_anthropic(wire_resp)
+        AnthropicNativeResponse::from_wire(wire_resp)
     }
 
     /// Chat completion using the native Anthropic path (streaming).
+    ///
+    /// **Limitation:** Streaming responses cannot preserve thinking signatures.
+    /// The resulting `StreamHandle` will produce `Reasoning { signature: None }`,
+    /// making it unsuitable for multi-turn extended thinking.  Use
+    /// [`chat_native()`](Self::chat_native) when you need signature round-trips.
     pub async fn chat_stream_native(
         &self,
         req: &AnthropicRequest,
@@ -164,7 +234,9 @@ impl Provider for AnthropicProvider {
             base: req.clone(),
             ext: AnthropicExt::default(),
         };
-        self.chat_native(&anthropic_req).await
+        self.chat_native(&anthropic_req)
+            .await
+            .map(AnthropicNativeResponse::into_canonical)
     }
 
     async fn chat_stream(&self, req: &ChatRequest) -> Result<StreamHandle, LlmError> {

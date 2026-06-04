@@ -123,7 +123,11 @@ pub fn process_event(
                     }
                 }
                 AnthropicDelta::SignatureDelta { signature: _ } => {
-                    // Signature is dropped at the canonical layer — no-op.
+                    // TODO: stream path cannot preserve thinking signatures.
+                    // This means chat_stream_native() + StreamHandle::collect() will
+                    // produce Reasoning { signature: None }, breaking multi-turn
+                    // extended thinking on the streaming path. Use chat_native() for
+                    // multi-turn thinking conversations that require signature round-trips.
                 }
             }
         }

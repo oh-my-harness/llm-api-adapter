@@ -81,8 +81,8 @@ impl ChatResponse {
     /// Return the first reasoning block text, if any.
     pub fn reasoning(&self) -> Option<&str> {
         self.content.iter().find_map(|c| {
-            if let ResponseContent::Reasoning(r) = c {
-                Some(r.as_str())
+            if let ResponseContent::Reasoning { text, .. } = c {
+                Some(text.as_str())
             } else {
                 None
             }

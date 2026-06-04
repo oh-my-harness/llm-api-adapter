@@ -79,7 +79,13 @@ impl StreamHandle {
             all.push((idx, ResponseContent::Text(text)));
         }
         for (idx, text) in reasoning_blocks {
-            all.push((idx, ResponseContent::Reasoning(text)));
+            all.push((
+                idx,
+                ResponseContent::Reasoning {
+                    text,
+                    signature: None,
+                },
+            ));
         }
         for (idx, (tool_id, name)) in tool_starts {
             let args = tool_args.remove(&idx).unwrap_or_default();

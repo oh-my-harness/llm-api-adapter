@@ -52,7 +52,7 @@ async fn deepseek_reasoning_response() {
     let reasoning_idx = resp
         .content
         .iter()
-        .position(|c| matches!(c, ResponseContent::Reasoning(_)))
+        .position(|c| matches!(c, ResponseContent::Reasoning { .. }))
         .unwrap();
     let text_idx = resp
         .content

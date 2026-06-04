@@ -337,11 +337,28 @@ fn assistant_content_to_wire(content: &[ResponseContent]) -> AnthropicWireMessag
                     input: ti.input.clone(),
                 });
             }
-            ResponseContent::Reasoning(r) => {
-                // Anthropic does not accept reasoning in requests; encode as text
-                // for round-trip compatibility.
+            ResponseContent::Reasoning {
+                text,
+                signature: Some(sig),
+            } => {
+                // Re-encode as Thinking block with its signature for multi-turn compatibility.
+                blocks.push(AnthropicContentBlock::Thinking {
+                    thinking: text.clone(),
+                    signature: sig.clone(),
+                });
+            }
+            ResponseContent::Reasoning {
+                text,
+                signature: None,
+            } => {
+                // Without a signature we cannot emit a Thinking block — the API would
+                // reject it. This path is hit when (a) using the universal Provider::chat()
+                // path, (b) collecting a streamed response (chat_stream_native), or
+                // (c) mixing non-Anthropic reasoning into an Anthropic request.
+                // Encode as text as a best-effort fallback.
+                tracing::warn!("Reasoning block has no signature; encoding as text for Anthropic request");
                 blocks.push(AnthropicContentBlock::Text {
-                    text: r.clone(),
+                    text: text.clone(),
                     cache_control: None,
                 });
             }
@@ -521,18 +538,29 @@ pub(crate) fn from_anthropic(resp: AnthropicResponse) -> Result<ChatResponse, Ll
 /// Convert an Anthropic response block to a canonical ResponseContent.
 fn anthropic_response_block_to_canonical(block: AnthropicResponseBlock) -> Option<ResponseContent> {
     match block {
-        AnthropicResponseBlock::Text { text } if !text.is_empty() => Some(ResponseContent::Text(text)),
-        AnthropicResponseBlock::Text { .. } => None,
-        AnthropicResponseBlock::ToolUse { id, name, input } => {
-            Some(ResponseContent::ToolInvocation(ToolInvocation { id, name, input }))
+        AnthropicResponseBlock::Text { text } if !text.is_empty() => {
+            Some(ResponseContent::Text(text))
         }
-        AnthropicResponseBlock::Thinking { thinking, signature: _ } if !thinking.is_empty() => {
-            Some(ResponseContent::Reasoning(thinking))
+        AnthropicResponseBlock::Text { .. } => None,
+        AnthropicResponseBlock::ToolUse { id, name, input } => Some(
+            ResponseContent::ToolInvocation(ToolInvocation { id, name, input }),
+        ),
+        AnthropicResponseBlock::Thinking { thinking, signature } if !thinking.is_empty() => {
+            let sig = if signature.is_empty() {
+                None
+            } else {
+                Some(signature)
+            };
+            Some(ResponseContent::Reasoning {
+                text: thinking,
+                signature: sig,
+            })
         }
         AnthropicResponseBlock::Thinking { .. } => None,
-        AnthropicResponseBlock::RedactedThinking { data } => {
-            Some(ResponseContent::Reasoning(format!("[redacted_thinking: {data}]")))
-        }
+        AnthropicResponseBlock::RedactedThinking { data } => Some(ResponseContent::Reasoning {
+            text: format!("[redacted_thinking: {data}]"),
+            signature: None,
+        }),
     }
 }
 
@@ -770,7 +798,10 @@ mod tests {
         assert_eq!(canon.content.len(), 2);
         // First block should be Reasoning (from Thinking)
         match &canon.content[0] {
-            ResponseContent::Reasoning(r) => assert_eq!(r, "Let me reason here..."),
+            ResponseContent::Reasoning { text, signature } => {
+                assert_eq!(text, "Let me reason here...");
+                assert_eq!(signature.as_deref(), Some("sig_abc123"));
+            }
             other => panic!("expected Reasoning, got {other:?}"),
         }
         // Second block should be Text
@@ -904,8 +935,9 @@ mod tests {
         let canon = from_anthropic(resp).unwrap();
         assert_eq!(canon.content.len(), 1);
         match &canon.content[0] {
-            ResponseContent::Reasoning(r) => {
-                assert_eq!(r, "[redacted_thinking: sensitive]");
+            ResponseContent::Reasoning { text, signature } => {
+                assert_eq!(text, "[redacted_thinking: sensitive]");
+                assert!(signature.is_none());
             }
             other => panic!("expected Reasoning, got {other:?}"),
         }
@@ -1023,5 +1055,40 @@ mod tests {
         let req = AnthropicRequest { base, ext };
         assert_eq!(req.base.model(), "claude-sonnet-4-20250514");
         assert_eq!(req.ext.top_k, Some(40));
+    }
+
+    #[test]
+    fn anthropic_native_response_into_message_preserves_signature() {
+        use crate::anthropic::AnthropicNativeResponse;
+        let resp = AnthropicResponse {
+            id: "msg_sig".into(),
+            response_type: "message".into(),
+            role: "assistant".into(),
+            model: "claude-sonnet-4-20250514".into(),
+            content: vec![
+                AnthropicResponseBlock::Thinking {
+                    thinking: "Let me think...".into(),
+                    signature: "sig_abc".into(),
+                },
+                AnthropicResponseBlock::Text {
+                    text: "Answer.".into(),
+                },
+            ],
+            stop_reason: Some("end_turn".into()),
+            stop_sequence: None,
+            usage: AnthropicUsage::default(),
+        };
+        let native = AnthropicNativeResponse::from_wire(resp).unwrap();
+        let msg = native.into_message();
+        match msg {
+            crate::types::Message::Assistant(content) => match &content[0] {
+                ResponseContent::Reasoning { text, signature } => {
+                    assert_eq!(text, "Let me think...");
+                    assert_eq!(signature.as_deref(), Some("sig_abc"));
+                }
+                other => panic!("expected Reasoning, got {other:?}"),
+            },
+            other => panic!("expected Assistant, got {other:?}"),
+        }
     }
 }
