@@ -34,15 +34,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .messages_path(messages_path)
         .build();
 
-    let weather_tool = ToolDef {
-        name: "get_weather".into(),
-        description: "Get current weather for a city.".into(),
-        input_schema: json!({
+    let weather_tool = ToolDef::new(
+        "get_weather",
+        "Get current weather for a city.",
+        json!({
             "type": "object",
             "properties": {"location": {"type": "string"}},
             "required": ["location"],
         }),
-    };
+    );
 
     let ext = AnthropicExt::builder()
         .top_k(40)
@@ -65,7 +65,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ext,
     };
 
-    let resp = p.chat_native(&anth_req).await?;
+    let native = p.chat_native(&anth_req).await?;
+    let resp = native.as_response();
     let invocations: Vec<_> = resp.tool_invocations().collect();
     println!(
         "stop_reason={:?}\ntool calls: {}",

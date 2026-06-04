@@ -12,6 +12,21 @@ pub struct ToolDef {
     pub input_schema: serde_json::Value,
 }
 
+impl ToolDef {
+    /// Create a new tool definition.
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        input_schema: serde_json::Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            input_schema,
+        }
+    }
+}
+
 /// How the model should decide whether to call tools.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ToolChoice {

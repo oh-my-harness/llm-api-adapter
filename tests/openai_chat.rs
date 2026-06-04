@@ -35,11 +35,11 @@ async fn chat_returns_tool_call() {
     let server = MockServer::start().await;
     common::mock_chat(&server, include_str!("fixtures/openai/chat_tool_call.json")).await;
 
-    let tool = ToolDef {
-        name: "get_weather".into(),
-        description: "Get the weather".into(),
-        input_schema: serde_json::json!({"type":"object","properties":{"location":{"type":"string"}}}),
-    };
+    let tool = ToolDef::new(
+        "get_weather",
+        "Get the weather",
+        serde_json::json!({"type":"object","properties":{"location":{"type":"string"}}}),
+    );
     let req = ChatRequest::builder("gpt-4o", 512)
         .message(Message::User(vec![RequestContent::Text(
             "What's the weather in Paris?".into(),
@@ -88,11 +88,11 @@ async fn multi_turn_tool_call() {
     )])];
     let req1 = ChatRequest::builder("gpt-4o", 512)
         .messages(messages.clone())
-        .tool(ToolDef {
-            name: "get_weather".into(),
-            description: "Get weather".into(),
-            input_schema: serde_json::json!({}),
-        })
+        .tool(ToolDef::new(
+            "get_weather",
+            "Get weather",
+            serde_json::json!({}),
+        ))
         .build();
     let resp1 = p.chat(&req1).await.unwrap();
     assert!(matches!(resp1.stop_reason, StopReason::ToolUse));
