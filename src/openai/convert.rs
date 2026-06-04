@@ -26,6 +26,9 @@ pub struct OpenAIExt {
     pub presence_penalty: Option<f32>,
     /// Unique identifier for tracking requests. Passed as `user` to OpenAI API.
     pub user: Option<String>,
+    /// Reasoning effort for o-series / GPT-5 models ("low", "medium", "high", etc.).
+    /// Has no effect on models that do not support reasoning.
+    pub reasoning_effort: Option<String>,
     /// If true, parse DeepSeek reasoning_content field from responses.
     pub parse_reasoning_content: bool,
     /// If true, tolerate keepalive messages in stream (DeepSeek compatibility).
@@ -39,6 +42,7 @@ pub struct OpenAIExtBuilder {
     frequency_penalty: Option<f32>,
     presence_penalty: Option<f32>,
     user: Option<String>,
+    reasoning_effort: Option<String>,
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
 }
@@ -73,6 +77,12 @@ impl OpenAIExtBuilder {
         self
     }
 
+    /// Set reasoning effort for o-series / GPT-5 models ("low", "medium", "high", etc.).
+    pub fn reasoning_effort(mut self, effort: impl Into<String>) -> Self {
+        self.reasoning_effort = Some(effort.into());
+        self
+    }
+
     /// Enable parsing of DeepSeek reasoning_content.
     pub fn parse_reasoning_content(mut self) -> Self {
         self.parse_reasoning_content = true;
@@ -92,6 +102,7 @@ impl OpenAIExtBuilder {
             frequency_penalty: self.frequency_penalty,
             presence_penalty: self.presence_penalty,
             user: self.user,
+            reasoning_effort: self.reasoning_effort,
             parse_reasoning_content: self.parse_reasoning_content,
             tolerant_keepalive: self.tolerant_keepalive,
         }
@@ -176,6 +187,7 @@ pub fn to_oai(
         frequency_penalty: ext.frequency_penalty,
         presence_penalty: ext.presence_penalty,
         user: ext.user.clone(),
+        reasoning_effort: ext.reasoning_effort.clone(),
     })
 }
 
@@ -419,11 +431,27 @@ fn parse_stop_reason(s: Option<&str>) -> StopReason {
 
 /// Convert an OpenAI OaiUsage to a canonical Usage.
 fn oai_usage_to_canonical(u: OaiUsage, _parse_reasoning: bool) -> Usage {
+    // Cached tokens: OpenAI uses prompt_tokens_details.cached_tokens,
+    // DeepSeek uses prompt_cache_hit_tokens — take whichever is non-zero.
+    let cached_input_tokens = u
+        .prompt_tokens_details
+        .as_ref()
+        .map(|d| d.cached_tokens)
+        .unwrap_or(0)
+        .max(u.prompt_cache_hit_tokens);
+
+    // Reasoning tokens: OpenAI o-series reports via completion_tokens_details.
+    let reasoning_tokens = u
+        .completion_tokens_details
+        .as_ref()
+        .map(|d| d.reasoning_tokens)
+        .unwrap_or(0);
+
     Usage {
         input_tokens: u.prompt_tokens,
         output_tokens: u.completion_tokens,
-        cached_input_tokens: u.prompt_cache_hit_tokens,
+        cached_input_tokens,
         cache_creation_input_tokens: 0,
-        reasoning_tokens: 0,
+        reasoning_tokens,
     }
 }
