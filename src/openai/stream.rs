@@ -60,42 +60,33 @@ pub fn process_chunk(
 ) -> Vec<Result<StreamEvent, LlmError>> {
     let mut events = Vec::new();
 
-    // Store the finish_reason if present (for MessageStop event)
-    if !chunk.choices.is_empty() {
-        if let Some(ref finish_reason) = chunk.choices[0].finish_reason {
+    // Capture finish_reason from any choice that provides one (for MessageStop).
+    for choice in chunk.choices.iter() {
+        if let Some(ref finish_reason) = choice.finish_reason {
             state.pending_stop = Some(finish_reason.clone());
         }
     }
 
-    // If choices is empty, this is a usage-only chunk; close all blocks and emit MessageStop
-    if chunk.choices.is_empty() {
-        // Close all open blocks
+    // Process deltas (no-op when choices is empty, e.g. a usage-only chunk).
+    for choice in chunk.choices.iter() {
+        events.extend(process_delta(state, &choice.delta, parse_reasoning));
+    }
+
+    // Emit MessageStop when this chunk carries usage. DeepSeek packs
+    // finish_reason and usage into the same chunk; OpenAI sends a separate
+    // usage-only chunk after stream_options.include_usage. Both paths reach
+    // here once usage arrives.
+    if let Some(usage) = chunk.usage {
         for &idx in &state.open_blocks {
             events.push(Ok(StreamEvent::ContentStop { index: idx }));
         }
         state.open_blocks.clear();
 
-        // Emit MessageStop if we have usage
-        if let Some(usage) = chunk.usage {
-            let stop_reason = parse_stop_reason(state.pending_stop.as_deref());
-            events.push(Ok(StreamEvent::MessageStop {
-                stop_reason,
-                usage: crate::types::Usage {
-                    input_tokens: usage.prompt_tokens,
-                    output_tokens: usage.completion_tokens,
-                    cached_input_tokens: usage.prompt_cache_hit_tokens,
-                    cache_creation_input_tokens: 0,
-                    reasoning_tokens: 0,
-                },
-            }));
-        }
-
-        return events;
-    }
-
-    // Process each choice's delta
-    for choice in chunk.choices.iter() {
-        events.extend(process_delta(state, &choice.delta, parse_reasoning));
+        let stop_reason = parse_stop_reason(state.pending_stop.as_deref());
+        events.push(Ok(StreamEvent::MessageStop {
+            stop_reason,
+            usage: super::convert::oai_usage_to_canonical(usage, parse_reasoning),
+        }));
     }
 
     events

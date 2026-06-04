@@ -430,7 +430,7 @@ fn parse_stop_reason(s: Option<&str>) -> StopReason {
 }
 
 /// Convert an OpenAI OaiUsage to a canonical Usage.
-fn oai_usage_to_canonical(u: OaiUsage, _parse_reasoning: bool) -> Usage {
+pub(crate) fn oai_usage_to_canonical(u: OaiUsage, _parse_reasoning: bool) -> Usage {
     // Cached tokens: OpenAI uses prompt_tokens_details.cached_tokens,
     // DeepSeek uses prompt_cache_hit_tokens — take whichever is non-zero.
     let cached_input_tokens = u
