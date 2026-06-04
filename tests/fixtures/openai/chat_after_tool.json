@@ -1,12 +1,1 @@
-{
-  "id": "chatcmpl-after123",
-  "object": "chat.completion",
-  "created": 1700000000,
-  "model": "gpt-4o",
-  "choices": [{
-    "index": 0,
-    "message": {"role": "assistant", "content": "The weather in Paris is sunny and 22°C."},
-    "finish_reason": "stop"
-  }],
-  "usage": {"prompt_tokens": 80, "completion_tokens": 15, "total_tokens": 95}
-}
+{"id":"79913ba3-1fa4-48e7-b350-ada72baa2338","object":"chat.completion","created":1780556598,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"The current weather in **Paris** is **sunny** with a temperature of **22°C**."},"logprobs":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":343,"completion_tokens":21,"total_tokens":364,"prompt_tokens_details":{"cached_tokens":256},"prompt_cache_hit_tokens":256,"prompt_cache_miss_tokens":87},"system_fingerprint":"fp_8b330d02d0_prod0820_fp8_kvcache_20260402"}

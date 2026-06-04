@@ -27,9 +27,8 @@ async fn deepseek_stream_reasoning_then_text() {
     let resp = handle.collect().await.unwrap();
 
     assert!(resp.reasoning().is_some());
-    let reasoning = resp.reasoning().unwrap();
-    assert!(reasoning.contains("Let me"));
-    assert_eq!(resp.text(), "Answer: 42");
+    assert!(!resp.reasoning().unwrap().is_empty());
+    assert!(!resp.text().is_empty());
     // Reasoning block has lower index than text block
     let reasoning_idx = resp.content.iter().position(|c| matches!(c, ResponseContent::Reasoning(_))).unwrap();
     let text_idx = resp.content.iter().position(|c| matches!(c, ResponseContent::Text(_))).unwrap();

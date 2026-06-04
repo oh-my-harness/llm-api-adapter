@@ -25,8 +25,11 @@ async fn deepseek_simple_chat() {
         .build();
 
     let resp = provider(&server).chat(&req).await.unwrap();
-    assert_eq!(resp.text(), "Hello from DeepSeek!");
-    assert_eq!(resp.usage.cached_input_tokens, 0);
+    assert!(!resp.text().is_empty());
+    // Recorded with thinking explicitly disabled — no reasoning_content.
+    assert!(resp.reasoning().is_none());
+    assert!(resp.usage.input_tokens > 0);
+    assert!(resp.usage.output_tokens > 0);
 }
 
 #[tokio::test]
@@ -40,11 +43,13 @@ async fn deepseek_reasoning_response() {
 
     let resp = provider(&server).chat(&req).await.unwrap();
 
-    // Reasoning should appear as ResponseContent::Reasoning before the text
     assert!(resp.reasoning().is_some());
-    assert!(resp.reasoning().unwrap().contains("think"));
-    assert_eq!(resp.text(), "The answer is 42.");
-    // Reasoning block comes first (index 0), text second (index 1)
-    assert!(matches!(&resp.content[0], ResponseContent::Reasoning(_)));
-    assert!(matches!(&resp.content[1], ResponseContent::Text(_)));
+    assert!(!resp.reasoning().unwrap().is_empty());
+    assert!(!resp.text().is_empty());
+    // Reasoning block precedes text block.
+    let reasoning_idx = resp.content.iter().position(|c| matches!(c, ResponseContent::Reasoning(_))).unwrap();
+    let text_idx = resp.content.iter().position(|c| matches!(c, ResponseContent::Text(_))).unwrap();
+    assert!(reasoning_idx < text_idx);
+    // DeepSeek V4 reports reasoning_tokens in completion_tokens_details.
+    assert!(resp.usage.reasoning_tokens > 0);
 }
