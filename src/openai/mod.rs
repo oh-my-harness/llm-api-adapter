@@ -29,6 +29,17 @@ pub struct OpenAIProviderBuilder {
     tolerant_keepalive: bool,
 }
 
+fn extract_retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?;
+    let s = value.to_str().ok()?;
+    // RFC 7231: seconds format (e.g. "30")
+    if let Ok(secs) = s.trim().parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    // HTTP-date format: skip (would require extra dep; None is safe fallback)
+    None
+}
+
 impl OpenAIProvider {
     /// Create a new builder for OpenAIProvider with the given API key.
     pub fn builder(api_key: impl Into<String>) -> OpenAIProviderBuilder {
@@ -65,6 +76,7 @@ impl OpenAIProvider {
         let status = response.status();
 
         if !status.is_success() {
+            let retry_after = extract_retry_after_header(response.headers());
             // Try to parse structured error response
             let error_text = response.text().await?;
 
@@ -83,27 +95,14 @@ impl OpenAIProvider {
                         message: error_text,
                     })
                 }
-                429 => {
-                    let retry_after = self.extract_retry_after(&error_text);
-                    Err(LlmError::RateLimit { retry_after })
-                }
+                429 => Err(LlmError::RateLimit { retry_after }),
                 500 | 502 | 503 => Err(LlmError::ServerError(error_text)),
-                529 => {
-                    let retry_after = self.extract_retry_after(&error_text);
-                    Err(LlmError::Overloaded { retry_after })
-                }
+                529 => Err(LlmError::Overloaded { retry_after }),
                 _ => Err(LlmError::InvalidRequest(error_text)),
             };
         }
 
         Ok(response)
-    }
-
-    /// Extract retry-after delay from error text (if present).
-    fn extract_retry_after(&self, _error_text: &str) -> Option<Duration> {
-        // TODO: Parse retry-after header from actual response headers
-        // For now, return None
-        None
     }
 
     /// Chat completion using the native OpenAI path (non-streaming).

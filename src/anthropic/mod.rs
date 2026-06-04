@@ -30,6 +30,17 @@ pub struct AnthropicProviderBuilder {
     messages_path: String,
 }
 
+fn extract_retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?;
+    let s = value.to_str().ok()?;
+    // RFC 7231: seconds format (e.g. "30")
+    if let Ok(secs) = s.trim().parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    // HTTP-date format: skip (would require extra dep; None is safe fallback)
+    None
+}
+
 impl AnthropicProvider {
     /// Create a new builder for AnthropicProvider with the given API key.
     pub fn builder(api_key: impl Into<String>) -> AnthropicProviderBuilder {
@@ -67,6 +78,7 @@ impl AnthropicProvider {
         let status = response.status();
 
         if !status.is_success() {
+            let retry_after = extract_retry_after_header(response.headers());
             let error_text = response.text().await?;
 
             // Attempt to parse structured error response
@@ -81,26 +93,14 @@ impl AnthropicProvider {
                 413 => Err(LlmError::InvalidRequest(format!(
                     "request_too_large: {error_text}"
                 ))),
-                429 => {
-                    let retry_after = Self::extract_retry_after(&error_text);
-                    Err(LlmError::RateLimit { retry_after })
-                }
+                429 => Err(LlmError::RateLimit { retry_after }),
                 500 | 502 | 503 | 504 => Err(LlmError::ServerError(error_text)),
-                529 => {
-                    let retry_after = Self::extract_retry_after(&error_text);
-                    Err(LlmError::Overloaded { retry_after })
-                }
+                529 => Err(LlmError::Overloaded { retry_after }),
                 _ => Err(LlmError::InvalidRequest(error_text)),
             };
         }
 
         Ok(response)
-    }
-
-    /// Extract retry-after delay from error text (if present).
-    fn extract_retry_after(_error_text: &str) -> Option<Duration> {
-        // TODO: Parse retry-after header from actual response headers
-        None
     }
 
     /// Chat completion using the native Anthropic path (non-streaming).
