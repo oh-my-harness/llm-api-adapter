@@ -115,6 +115,11 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_provider_builds() {
+        let _p = anthropic::AnthropicProvider::builder("test-key").build();
+    }
+
+    #[test]
     fn oai_response_deserializes() {
         use openai::schema::{OaiContent, OaiResponse};
         let json = r#"{
