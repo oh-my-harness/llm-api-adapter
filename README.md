@@ -3,9 +3,10 @@
 *[中文版](README.zh-CN.md)*
 
 A Rust adapter layer that normalises the wire formats of multiple LLM
-providers (OpenAI Chat Completions, DeepSeek, and any OpenAI-compatible
-endpoint) into a single canonical type system, with first-class support for
-provider-specific extensions, streaming, and tool calling.
+providers (OpenAI Chat Completions, Anthropic Messages, DeepSeek, and any
+OpenAI-compatible endpoint) into a single canonical type system, with
+first-class support for provider-specific extensions, streaming, and tool
+calling.
 
 **Status:** pre-release (v0.1.0). Public API is unstable until v1.0.
 
@@ -41,7 +42,7 @@ To keep the surface area honest, this library deliberately does **not** do:
 |---|---|---|---|---|---|
 | OpenAI Chat Completions | ✅ | `OpenAIExt`: seed, penalties, `reasoning_effort`, `extra_body` | ✅ | ✅ | `reasoning_effort` (o-series / GPT-5) |
 | DeepSeek (`api.deepseek.com`) | ✅ (factory `deepseek::client`) | `OpenAIExt` (e.g. `extra_body: {"thinking": {"type": "disabled"}}`) | ✅ | ✅ | `reasoning_content` parsed into `ResponseContent::Reasoning` |
-| Anthropic Messages | planned | | | | |
+| Anthropic Messages | ✅ | `AnthropicExt`: top_k, thinking, metadata, cache_hints | ✅ | ✅ | Extended Thinking (thinking block → `ResponseContent::Reasoning`) |
 | Any OpenAI-compatible gateway | ✅ via `base_url` + `chat_path` overrides | `extra_body` for non-standard fields | ✅ | ✅ | depends on endpoint |
 
 Tested compatible gateways for the path-override path: GitHub Models
@@ -111,8 +112,12 @@ if let Some(reasoning) = resp.reasoning() {
 ### Runtime provider switching
 
 ```rust
+use llm_adapter::{anthropic::AnthropicProvider, deepseek, openai::OpenAIProvider, types::*, Provider};
+
 let provider: Box<dyn Provider> = if use_deepseek {
     Box::new(deepseek::client(deepseek_key))
+} else if use_anthropic {
+    Box::new(AnthropicProvider::builder(anthropic_key).build())
 } else {
     Box::new(OpenAIProvider::builder(openai_key).build())
 };
@@ -218,6 +223,23 @@ let resp = openai_provider.chat_native(&oai_req).await?;
 let stream = openai_provider.chat_stream_native(&oai_req).await?;
 ```
 
+Anthropic native path follows the same pattern:
+
+```rust
+use llm_adapter::anthropic::{AnthropicExt, AnthropicMetadata, AnthropicRequest, ThinkingConfig};
+
+let ext = AnthropicExt::builder()
+    .top_k(40)
+    .thinking(ThinkingConfig { budget_tokens: 2000 })
+    .metadata(AnthropicMetadata { user_id: Some("my-user".into()) })
+    .disable_parallel_tool_use()
+    .build();
+
+let anth_req = AnthropicRequest { base: chat_req, ext };
+let resp = anthropic_provider.chat_native(&anth_req).await?;
+let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
+```
+
 ## Core concepts
 
 ### Canonical types
@@ -249,11 +271,11 @@ breaking change.
 
 ### Universal vs native path
 
-|  | `Provider::chat` (universal) | `OpenAIProvider::chat_native` (native) |
+|  | `Provider::chat` (universal) | `chat_native` (native) |
 |---|---|---|
-| Request | `&ChatRequest` | `&OpenAIRequest = { base: ChatRequest, ext: OpenAIExt }` |
+| Request | `&ChatRequest` | `&OpenAIRequest` / `&AnthropicRequest = { base: ChatRequest, ext }` |
 | Object-safe (`Box<dyn>`) | ✅ | ❌ (concrete provider type) |
-| Provider-specific fields | ❌ | ✅ seed, penalties, reasoning_effort, extra_body |
+| Provider-specific fields | ❌ | ✅ seed, penalties, top_k, thinking, cache_hints, extra_body |
 | Use when | runtime-pluggable providers | you need provider-specific features |
 
 ### StreamHandle
@@ -326,8 +348,8 @@ header instead of `Bearer`, and per-deployment paths.
 ./test.sh              # or: cargo test
 ```
 
-Runs ~29 unit and offline integration tests. No network, no API keys.
-Fixtures live in `tests/fixtures/{openai,deepseek}/` and were recorded
+Runs ~75 unit and offline integration tests. No network, no API keys.
+Fixtures live in `tests/fixtures/{openai,deepseek,anthropic}/` and were recorded
 from a real API so that wire-level details (`system_fingerprint`,
 `completion_tokens_details.reasoning_tokens`, SSE chunk boundaries, ...)
 match production behaviour.
@@ -357,6 +379,12 @@ export DEEPSEEK_API_KEY=...
 export DEEPSEEK_BASE_URL=https://api.deepseek.com     # default
 export DEEPSEEK_MODEL=deepseek-v4-flash               # default
 export DEEPSEEK_REASONING_MODEL=deepseek-v4-flash     # optional
+
+# Anthropic (can also target DeepSeek's /anthropic endpoint)
+export ANTHROPIC_API_KEY=...
+export ANTHROPIC_BASE_URL=https://api.anthropic.com    # default
+export ANTHROPIC_MESSAGES_PATH=/v1/messages            # default
+export ANTHROPIC_MODEL=claude-sonnet-4-6-20250514      # default
 ```
 
 Tests for a provider whose `*_API_KEY` is unset are silently skipped (no
@@ -391,6 +419,11 @@ src/
 │  ├─ schema.rs          # OpenAI wire types (pub(crate))
 │  ├─ convert.rs         # ChatRequest <-> OAI conversion, OpenAIExt builder
 │  └─ stream.rs          # SSE parser, OaiStreamState
+├─ anthropic/
+│  ├─ mod.rs             # AnthropicProvider + builder
+│  ├─ schema.rs          # Anthropic wire types (pub(crate))
+│  ├─ convert.rs         # ChatRequest <-> Anthropic conversion, AnthropicExt builder
+│  └─ stream.rs          # Anthropic SSE parser, AnthropicStreamState
 └─ deepseek.rs           # factory returning a pre-configured OpenAIProvider
 
 tests/
@@ -398,6 +431,7 @@ tests/
 ├─ common/mod.rs         # wiremock helpers + .env loader
 ├─ openai_*.rs           # offline tests
 ├─ deepseek_*.rs         # offline tests
+├─ anthropic_*.rs        # offline tests
 └─ integration_*.rs      # opt-in tests against real APIs
 
 examples/
@@ -406,12 +440,11 @@ examples/
 
 ## Known limitations
 
-- **Anthropic** not yet implemented (planned in a follow-up plan).
 - **Azure OpenAI** not supported (different auth header + deployment paths).
 - **OpenAI Responses API** not supported; only Chat Completions.
 - **Prompt caching** is observable in `Usage.cached_input_tokens` but not
-  proactively triggerable from the canonical layer (Anthropic-style
-  `cache_control` markers will be added with the Anthropic provider).
+  proactively triggerable from the canonical layer. Use the native path
+  (`AnthropicExt.cache_hints`) for cache-control markers.
 - **Retry / backoff** is not built in. Look at `LlmError::RateLimit` /
   `LlmError::Overloaded`'s `retry_after` and decide in your application.
 - **Structured Output** (`response_format: json_schema`) is not yet

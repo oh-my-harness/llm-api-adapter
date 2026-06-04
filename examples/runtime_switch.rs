@@ -1,13 +1,17 @@
-//! Hold `Box<dyn Provider>` and pick OpenAI or DeepSeek at runtime via a
-//! `PROVIDER` env var. The downstream call site doesn't know which.
+//! Hold `Box<dyn Provider>` and pick OpenAI, DeepSeek, or Anthropic at runtime
+//! via a `PROVIDER` env var. The downstream call site doesn't know which.
 //!
 //! Run with:
-//!   PROVIDER=openai   cargo run --example runtime_switch
-//!   PROVIDER=deepseek cargo run --example runtime_switch
+//!   PROVIDER=openai    cargo run --example runtime_switch
+//!   PROVIDER=deepseek  cargo run --example runtime_switch
+//!   PROVIDER=anthropic cargo run --example runtime_switch
 //!
-//! Reads from .env. Same OPENAI_* / DEEPSEEK_* variables as the other examples.
+//! Reads from .env. Same OPENAI_* / DEEPSEEK_* / ANTHROPIC_* variables as the
+//! other examples.
 
-use llm_adapter::{Provider, deepseek, openai::OpenAIProvider, types::*};
+use llm_adapter::{
+    Provider, anthropic::AnthropicProvider, deepseek, openai::OpenAIProvider, types::*,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -37,8 +41,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .build();
             (Box::new(p), model)
         }
+        "anthropic" => {
+            let api_key =
+                std::env::var("ANTHROPIC_API_KEY").map_err(|_| "ANTHROPIC_API_KEY is not set")?;
+            let base_url = std::env::var("ANTHROPIC_BASE_URL")
+                .unwrap_or_else(|_| "https://api.anthropic.com".into());
+            let messages_path =
+                std::env::var("ANTHROPIC_MESSAGES_PATH").unwrap_or_else(|_| "/v1/messages".into());
+            let model = std::env::var("ANTHROPIC_MODEL")
+                .unwrap_or_else(|_| "claude-sonnet-4-6-20250514".into());
+            let p = AnthropicProvider::builder(api_key)
+                .base_url(base_url)
+                .messages_path(messages_path)
+                .build();
+            (Box::new(p), model)
+        }
         other => {
-            return Err(format!("Unknown PROVIDER={other} (expected openai or deepseek)").into());
+            return Err(format!(
+                "Unknown PROVIDER={other} (expected openai, deepseek, or anthropic)"
+            )
+            .into());
         }
     };
 
