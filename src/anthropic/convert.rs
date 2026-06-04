@@ -525,7 +525,7 @@ pub(crate) fn from_anthropic(resp: AnthropicResponse) -> Result<ChatResponse, Ll
     let content: Vec<ResponseContent> = resp
         .content
         .into_iter()
-        .map(anthropic_response_block_to_canonical)
+        .filter_map(anthropic_response_block_to_canonical)
         .collect();
 
     let stop_reason = parse_anthropic_stop_reason(resp.stop_reason.as_deref());
@@ -541,21 +541,19 @@ pub(crate) fn from_anthropic(resp: AnthropicResponse) -> Result<ChatResponse, Ll
 }
 
 /// Convert an Anthropic response block to a canonical ResponseContent.
-fn anthropic_response_block_to_canonical(block: AnthropicResponseBlock) -> ResponseContent {
+fn anthropic_response_block_to_canonical(block: AnthropicResponseBlock) -> Option<ResponseContent> {
     match block {
-        AnthropicResponseBlock::Text { text } => ResponseContent::Text(text),
+        AnthropicResponseBlock::Text { text } if !text.is_empty() => Some(ResponseContent::Text(text)),
+        AnthropicResponseBlock::Text { .. } => None,
         AnthropicResponseBlock::ToolUse { id, name, input } => {
-            ResponseContent::ToolInvocation(ToolInvocation { id, name, input })
+            Some(ResponseContent::ToolInvocation(ToolInvocation { id, name, input }))
         }
-        AnthropicResponseBlock::Thinking {
-            thinking,
-            signature: _,
-        } => {
-            // Signature is dropped; reasoning is read-only in canonical form.
-            ResponseContent::Reasoning(thinking)
+        AnthropicResponseBlock::Thinking { thinking, signature: _ } if !thinking.is_empty() => {
+            Some(ResponseContent::Reasoning(thinking))
         }
+        AnthropicResponseBlock::Thinking { .. } => None,
         AnthropicResponseBlock::RedactedThinking { data } => {
-            ResponseContent::Reasoning(format!("[redacted_thinking: {data}]"))
+            Some(ResponseContent::Reasoning(format!("[redacted_thinking: {data}]")))
         }
     }
 }
@@ -1016,6 +1014,26 @@ mod tests {
             }
             other => panic!("expected Blocks, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn from_anthropic_filters_empty_text_blocks() {
+        let resp = AnthropicResponse {
+            id: "msg_07".into(),
+            response_type: "message".into(),
+            role: "assistant".into(),
+            model: "claude-sonnet-4-20250514".into(),
+            content: vec![
+                AnthropicResponseBlock::Text { text: "".into() },
+                AnthropicResponseBlock::Text { text: "Hello".into() },
+            ],
+            stop_reason: Some("end_turn".into()),
+            stop_sequence: None,
+            usage: AnthropicUsage::default(),
+        };
+        let canon = from_anthropic(resp).unwrap();
+        assert_eq!(canon.content.len(), 1);
+        assert_eq!(canon.text(), "Hello");
     }
 
     #[test]
