@@ -34,6 +34,11 @@ pub enum ResponseContent {
     Text(String),
     /// Tool the model wants to invoke.
     ToolInvocation(ToolInvocation),
-    /// Chain-of-thought reasoning text (read-only; not all providers support multi-turn with this).
-    Reasoning(String),
+    /// Chain-of-thought reasoning text.
+    /// `signature` is Anthropic-only; `None` for all other providers.
+    /// Pass responses through `AnthropicNativeResponse::into_message()` to enable multi-turn thinking.
+    Reasoning {
+        text: String,
+        signature: Option<String>,
+    },
 }
