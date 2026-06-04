@@ -10,8 +10,6 @@ pub use provider::Provider;
 pub use stream_handle::StreamHandle;
 pub use types::*;
 
-pub fn _check() {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
