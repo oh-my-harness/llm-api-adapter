@@ -146,7 +146,10 @@ impl AnthropicProviderBuilder {
     /// Build the AnthropicProvider instance.
     pub fn build(self) -> AnthropicProvider {
         AnthropicProvider {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .expect("failed to build HTTP client"),
             api_key: self.api_key,
             base_url: self.base_url,
             messages_path: self.messages_path,
