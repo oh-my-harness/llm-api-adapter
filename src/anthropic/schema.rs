@@ -289,6 +289,7 @@ pub(crate) enum AnthropicDelta {
 
 /// Message-level delta payload (stop info).
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // stop_sequence kept for wire schema fidelity
 pub(crate) struct AnthropicMessageDeltaPayload {
     /// Reason for stopping.
     pub stop_reason: Option<String>,
@@ -300,6 +301,7 @@ pub(crate) struct AnthropicMessageDeltaPayload {
 
 /// Anthropic error response.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // parsed from error responses in mod.rs
 pub(crate) struct AnthropicErrorResponse {
     /// Object type (always "error").
     #[serde(rename = "type")]
@@ -310,6 +312,7 @@ pub(crate) struct AnthropicErrorResponse {
 
 /// Error body.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // parsed from error responses in mod.rs
 pub(crate) struct AnthropicErrorBody {
     /// Error type (e.g., "invalid_request_error", "authentication_error").
     pub r#type: String,
