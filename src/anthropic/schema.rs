@@ -178,12 +178,11 @@ pub(crate) struct AnthropicResponse {
 /// A single content block in the response.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)] // signature field in Thinking is dropped at canonical layer
 pub(crate) enum AnthropicResponseBlock {
     /// Text content.
     #[serde(rename = "text")]
-    Text {
-        text: String,
-    },
+    Text { text: String },
     /// Tool use call.
     #[serde(rename = "tool_use")]
     ToolUse {
@@ -271,7 +270,7 @@ pub(crate) enum AnthropicStreamEvent {
 /// Delta content in a streaming content block update.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-#[allow(dead_code)] // Some variants are only read by the stream parser
+#[allow(dead_code, clippy::enum_variant_names)] // Some variants are only read by the stream parser; Delta suffix mirrors wire format
 pub(crate) enum AnthropicDelta {
     /// Text delta.
     #[serde(rename = "text_delta")]

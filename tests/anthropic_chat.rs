@@ -15,7 +15,9 @@ async fn simple_chat_returns_response() {
     common::mock_anthropic_chat(&server, include_str!("fixtures/anthropic/chat_simple.json")).await;
 
     let req = ChatRequest::builder("deepseek-v4-flash", 256)
-        .message(Message::User(vec![RequestContent::Text("Say hi in exactly five words.".into())]))
+        .message(Message::User(vec![RequestContent::Text(
+            "Say hi in exactly five words.".into(),
+        )]))
         .build();
 
     let resp = provider(&server).chat(&req).await.unwrap();
@@ -29,7 +31,11 @@ async fn simple_chat_returns_response() {
 #[tokio::test]
 async fn chat_returns_tool_call() {
     let server = MockServer::start().await;
-    common::mock_anthropic_chat(&server, include_str!("fixtures/anthropic/chat_tool_call.json")).await;
+    common::mock_anthropic_chat(
+        &server,
+        include_str!("fixtures/anthropic/chat_tool_call.json"),
+    )
+    .await;
 
     let tool = ToolDef {
         name: "get_weather".into(),
@@ -37,7 +43,9 @@ async fn chat_returns_tool_call() {
         input_schema: serde_json::json!({"type":"object","properties":{"location":{"type":"string"}},"required":["location"]}),
     };
     let req = ChatRequest::builder("deepseek-v4-flash", 256)
-        .message(Message::User(vec![RequestContent::Text("What is the weather in Paris?".into())]))
+        .message(Message::User(vec![RequestContent::Text(
+            "What is the weather in Paris?".into(),
+        )]))
         .tool(tool)
         .build();
 
@@ -108,7 +116,11 @@ async fn multi_turn_tool_call() {
 #[tokio::test]
 async fn reasoning_content_extracted() {
     let server = MockServer::start().await;
-    common::mock_anthropic_chat(&server, include_str!("fixtures/anthropic/chat_reasoning.json")).await;
+    common::mock_anthropic_chat(
+        &server,
+        include_str!("fixtures/anthropic/chat_reasoning.json"),
+    )
+    .await;
 
     let req = ChatRequest::builder("deepseek-v4-flash", 2048)
         .message(Message::User(vec![RequestContent::Text(
@@ -129,7 +141,12 @@ async fn reasoning_content_extracted() {
 #[tokio::test]
 async fn error_401_maps_to_unauthorized() {
     let server = MockServer::start().await;
-    common::mock_anthropic_error(&server, 401, include_str!("fixtures/anthropic/error_unauthorized.json")).await;
+    common::mock_anthropic_error(
+        &server,
+        401,
+        include_str!("fixtures/anthropic/error_unauthorized.json"),
+    )
+    .await;
 
     let req = ChatRequest::builder("deepseek-v4-flash", 256)
         .message(Message::User(vec![RequestContent::Text("Hi".into())]))
@@ -142,7 +159,12 @@ async fn error_401_maps_to_unauthorized() {
 #[tokio::test]
 async fn error_500_maps_to_server_error() {
     let server = MockServer::start().await;
-    common::mock_anthropic_error(&server, 500, include_str!("fixtures/anthropic/error_server.json")).await;
+    common::mock_anthropic_error(
+        &server,
+        500,
+        include_str!("fixtures/anthropic/error_server.json"),
+    )
+    .await;
 
     let req = ChatRequest::builder("deepseek-v4-flash", 256)
         .message(Message::User(vec![RequestContent::Text("Hi".into())]))

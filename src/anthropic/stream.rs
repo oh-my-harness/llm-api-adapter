@@ -1,5 +1,5 @@
-use crate::types::{ContentKind, StopReason, StreamEvent};
 use crate::LlmError;
+use crate::types::{ContentKind, StopReason, StreamEvent};
 use std::collections::HashMap;
 
 use super::convert::anthropic_usage_to_canonical;
@@ -91,15 +91,15 @@ pub fn process_event(
             events.push(Ok(StreamEvent::ContentStart { index: idx, kind }));
         }
 
-        AnthropicStreamEvent::ContentBlockDelta { index: _index, delta } => {
+        AnthropicStreamEvent::ContentBlockDelta {
+            index: _index,
+            delta,
+        } => {
             match delta {
                 AnthropicDelta::TextDelta { text } => {
                     // Emit TextDelta if we have an open text block.
                     if let Some(&idx) = state.open_blocks.last() {
-                        events.push(Ok(StreamEvent::TextDelta {
-                            index: idx,
-                            text,
-                        }));
+                        events.push(Ok(StreamEvent::TextDelta { index: idx, text }));
                     }
                 }
                 AnthropicDelta::InputJsonDelta { partial_json } => {
@@ -152,7 +152,7 @@ pub fn process_event(
 
             // Build usage from initial_message with updated output_tokens.
             let usage = state.initial_message.as_ref().map_or_else(
-                || crate::types::Usage::default(),
+                crate::types::Usage::default,
                 |msg| {
                     let mut u = msg.usage.clone();
                     u.output_tokens = state.output_tokens;
@@ -162,10 +162,7 @@ pub fn process_event(
 
             let stop_reason = parse_stop_reason(state.pending_stop_reason.as_deref());
 
-            events.push(Ok(StreamEvent::MessageStop {
-                stop_reason,
-                usage,
-            }));
+            events.push(Ok(StreamEvent::MessageStop { stop_reason, usage }));
         }
 
         AnthropicStreamEvent::Ping => {
@@ -397,7 +394,10 @@ mod tests {
         };
         let events1 = process_event(&mut state, delta1);
         assert_eq!(events1.len(), 1);
-        assert!(matches!(&events1[0], Ok(StreamEvent::ToolDelta { index: 0, .. })));
+        assert!(matches!(
+            &events1[0],
+            Ok(StreamEvent::ToolDelta { index: 0, .. })
+        ));
 
         let delta2 = AnthropicStreamEvent::ContentBlockDelta {
             index: 0,
@@ -407,7 +407,10 @@ mod tests {
         };
         let events2 = process_event(&mut state, delta2);
         assert_eq!(events2.len(), 1);
-        assert!(matches!(&events2[0], Ok(StreamEvent::ToolDelta { index: 0, .. })));
+        assert!(matches!(
+            &events2[0],
+            Ok(StreamEvent::ToolDelta { index: 0, .. })
+        ));
 
         // Verify accumulated string: "{\"loc" + "\"ation\": \"SF\"}" = "{\"loc\"ation\": \"SF\"}"
         // This is not valid JSON — we just verify accumulation works.
@@ -482,10 +485,7 @@ mod tests {
         let cb_stop = AnthropicStreamEvent::ContentBlockStop { index: 0 };
         let e = process_event(&mut state, cb_stop);
         assert_eq!(e.len(), 1);
-        assert!(matches!(
-            &e[0],
-            Ok(StreamEvent::ContentStop { index: 0 })
-        ));
+        assert!(matches!(&e[0], Ok(StreamEvent::ContentStop { index: 0 })));
         assert!(state.open_blocks.is_empty());
 
         // 5. message_delta
@@ -602,23 +602,44 @@ mod tests {
 
         // Expect 2 ContentStop + 1 MessageStop = 3 events
         assert_eq!(events.len(), 3);
-        assert!(matches!(&events[0], Ok(StreamEvent::ContentStop { index: 0 })));
-        assert!(matches!(&events[1], Ok(StreamEvent::ContentStop { index: 1 })));
         assert!(matches!(
-            &events[2],
-            Ok(StreamEvent::MessageStop { .. })
+            &events[0],
+            Ok(StreamEvent::ContentStop { index: 0 })
         ));
+        assert!(matches!(
+            &events[1],
+            Ok(StreamEvent::ContentStop { index: 1 })
+        ));
+        assert!(matches!(&events[2], Ok(StreamEvent::MessageStop { .. })));
         assert!(state.open_blocks.is_empty());
     }
 
     #[test]
     fn stop_reason_mapping() {
-        assert!(matches!(parse_stop_reason(Some("end_turn")), StopReason::EndTurn));
-        assert!(matches!(parse_stop_reason(Some("max_tokens")), StopReason::MaxTokens));
-        assert!(matches!(parse_stop_reason(Some("stop_sequence")), StopReason::StopSequence));
-        assert!(matches!(parse_stop_reason(Some("tool_use")), StopReason::ToolUse));
-        assert!(matches!(parse_stop_reason(Some("pause_turn")), StopReason::ContentFilter));
-        assert!(matches!(parse_stop_reason(Some("refusal")), StopReason::ContentFilter));
+        assert!(matches!(
+            parse_stop_reason(Some("end_turn")),
+            StopReason::EndTurn
+        ));
+        assert!(matches!(
+            parse_stop_reason(Some("max_tokens")),
+            StopReason::MaxTokens
+        ));
+        assert!(matches!(
+            parse_stop_reason(Some("stop_sequence")),
+            StopReason::StopSequence
+        ));
+        assert!(matches!(
+            parse_stop_reason(Some("tool_use")),
+            StopReason::ToolUse
+        ));
+        assert!(matches!(
+            parse_stop_reason(Some("pause_turn")),
+            StopReason::ContentFilter
+        ));
+        assert!(matches!(
+            parse_stop_reason(Some("refusal")),
+            StopReason::ContentFilter
+        ));
         assert!(matches!(
             parse_stop_reason(Some("unknown_reason")),
             StopReason::Other(_)

@@ -17,8 +17,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (provider, model): (Box<dyn Provider>, String) = match kind.as_str() {
         "deepseek" => {
-            let api_key = std::env::var("DEEPSEEK_API_KEY")
-                .map_err(|_| "DEEPSEEK_API_KEY is not set")?;
+            let api_key =
+                std::env::var("DEEPSEEK_API_KEY").map_err(|_| "DEEPSEEK_API_KEY is not set")?;
             let model =
                 std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
             (Box::new(deepseek::client(api_key)), model)
@@ -28,8 +28,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY is not set")?;
             let base_url = std::env::var("OPENAI_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com".into());
-            let chat_path = std::env::var("OPENAI_CHAT_PATH")
-                .unwrap_or_else(|_| "/v1/chat/completions".into());
+            let chat_path =
+                std::env::var("OPENAI_CHAT_PATH").unwrap_or_else(|_| "/v1/chat/completions".into());
             let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
             let p = OpenAIProvider::builder(api_key)
                 .base_url(base_url)
