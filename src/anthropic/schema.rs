@@ -102,8 +102,9 @@ pub(crate) struct AnthropicImageSource {
     /// Source type (e.g., "base64", "url").
     #[serde(rename = "type")]
     pub source_type: String,
-    /// Media type (e.g., "image/png", "image/jpeg").
-    pub media_type: String,
+    /// Media type (e.g., "image/png", "image/jpeg"). Absent for URL images.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
     /// Base64-encoded image data (when source_type is "base64").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
@@ -578,7 +579,7 @@ mod tests {
                 match &list[1] {
                     AnthropicContentBlock::Image { source } => {
                         assert_eq!(source.source_type, "base64");
-                        assert_eq!(source.media_type, "image/png");
+                        assert_eq!(source.media_type.as_deref(), Some("image/png"));
                     }
                     other => panic!("expected Image, got {other:?}"),
                 }
@@ -631,5 +632,18 @@ mod tests {
         let serialized_blocks = serde_json::to_value(&blocks).unwrap();
         let reparsed: AnthropicContentBlocks = serde_json::from_value(serialized_blocks).unwrap();
         assert!(matches!(reparsed, AnthropicContentBlocks::Blocks(_)));
+    }
+
+    #[test]
+    fn image_source_url_omits_media_type() {
+        let source = AnthropicImageSource {
+            source_type: "url".into(),
+            media_type: None,
+            data: None,
+            url: Some("https://example.com/img.png".into()),
+        };
+        let json = serde_json::to_value(&source).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("media_type"));
+        assert_eq!(json["url"], "https://example.com/img.png");
     }
 }

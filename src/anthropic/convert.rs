@@ -375,11 +375,11 @@ fn request_content_to_blocks(content: &[RequestContent]) -> AnthropicContentBloc
             RequestContent::Image(img) => {
                 let (source_type, media_type, data, url) = match img {
                     crate::types::ImageSource::Url(u) => {
-                        ("url".into(), String::new(), None, Some(u.clone()))
+                        ("url".into(), None, None, Some(u.clone()))
                     }
                     crate::types::ImageSource::Base64 { media_type, data } => (
                         "base64".into(),
-                        media_type.clone(),
+                        Some(media_type.clone()),
                         Some(data.clone()),
                         None,
                     ),
@@ -1007,7 +1007,7 @@ mod tests {
                 match &blocks[0] {
                     AnthropicContentBlock::Image { source } => {
                         assert_eq!(source.source_type, "base64");
-                        assert_eq!(source.media_type, "image/png");
+                        assert_eq!(source.media_type.as_deref(), Some("image/png"));
                         assert_eq!(source.data.as_deref(), Some("iVBORw0KGgo="));
                         assert!(source.url.is_none());
                     }
