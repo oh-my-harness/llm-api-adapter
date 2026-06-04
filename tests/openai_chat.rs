@@ -159,3 +159,32 @@ async fn error_500_maps_to_server_error() {
     let err = provider(&server).chat(&req).await.unwrap_err();
     assert!(matches!(err, LlmError::ServerError(_)));
 }
+
+#[tokio::test]
+async fn custom_chat_path_for_compatible_gateways() {
+    // GitHub Models-style: /chat/completions (no /v1 prefix).
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/chat/completions"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_raw(
+                include_str!("fixtures/openai/chat_simple.json"),
+                "application/json",
+            ),
+        )
+        .mount(&server)
+        .await;
+
+    let p = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .chat_path("/chat/completions")
+        .build();
+
+    let req = ChatRequest::builder("gpt-4o-mini", 64)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let resp = p.chat(&req).await.unwrap();
+    assert!(matches!(resp.stop_reason, StopReason::EndTurn));
+    assert!(!resp.text().is_empty());
+}
