@@ -76,3 +76,23 @@ pub fn load_dotenv() {
 pub fn opt_env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
+
+/// Mount a mock that replies to POST /v1/messages with the given JSON body.
+#[allow(dead_code)]
+pub async fn mock_anthropic_chat(server: &MockServer, body: &str) {
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+        .mount(server)
+        .await;
+}
+
+/// Mount a mock that replies to POST /v1/messages with an error.
+#[allow(dead_code)]
+pub async fn mock_anthropic_error(server: &MockServer, status: u16, body: &str) {
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(status).set_body_raw(body, "application/json"))
+        .mount(server)
+        .await;
+}

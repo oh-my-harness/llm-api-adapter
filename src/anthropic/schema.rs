@@ -157,13 +157,15 @@ pub(crate) struct AnthropicResponse {
     /// Response ID (e.g., "msg_01...").
     pub id: String,
     /// Object type (always "message").
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     pub response_type: String,
     /// Role (always "assistant").
+    #[serde(default)]
     pub role: String,
     /// Model used.
     pub model: String,
     /// Response content blocks.
+    #[serde(default)]
     pub content: Vec<AnthropicResponseBlock>,
     /// Reason for stopping.
     pub stop_reason: Option<String>,
@@ -178,15 +180,24 @@ pub(crate) struct AnthropicResponse {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum AnthropicResponseBlock {
     /// Text content.
-    Text { text: String },
-    /// Tool use request.
+    #[serde(rename = "text")]
+    Text {
+        text: String,
+    },
+    /// Tool use call.
+    #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
         name: String,
         input: serde_json::Value,
     },
     /// Thinking content (extended thinking).
-    Thinking { thinking: String, signature: String },
+    #[serde(rename = "thinking")]
+    Thinking {
+        thinking: String,
+        #[serde(default)]
+        signature: String,
+    },
     /// Redacted thinking content (extended thinking).
     #[serde(rename = "redacted_thinking")]
     RedactedThinking { data: String },

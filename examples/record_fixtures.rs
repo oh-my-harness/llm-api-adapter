@@ -20,6 +20,7 @@ use serde_json::json;
 
 const OAI_DEFAULT_BASE: &str = "https://api.openai.com";
 const DS_DEFAULT_BASE: &str = "https://api.deepseek.com";
+const ANTH_DEFAULT_BASE: &str = "https://api.anthropic.com";
 const FIXTURES_ROOT: &str = "tests/fixtures";
 
 #[derive(Clone, Copy, PartialEq)]
@@ -79,6 +80,14 @@ async fn main() {
         reasoning_model: opt_env("DEEPSEEK_REASONING_MODEL"),
     };
 
+    let anthropic = AnthropicConfig {
+        api_key: get_env("ANTHROPIC_API_KEY"),
+        base_url: get_env_or("ANTHROPIC_BASE_URL", ANTH_DEFAULT_BASE),
+        messages_path: get_env_or("ANTHROPIC_MESSAGES_PATH", "/v1/messages"),
+        model: opt_env("ANTHROPIC_MODEL"),
+        reasoning_model: opt_env("ANTHROPIC_REASONING_MODEL"),
+    };
+
     if openai.api_key.is_empty() {
         println!("[skip] openai: OPENAI_API_KEY not set");
     } else {
@@ -89,6 +98,12 @@ async fn main() {
         println!("[skip] deepseek: DEEPSEEK_API_KEY not set");
     } else {
         record_deepseek(&client, &deepseek).await;
+    }
+
+    if anthropic.api_key.is_empty() {
+        println!("[skip] anthropic: ANTHROPIC_API_KEY not set");
+    } else {
+        record_anthropic(&client, &anthropic).await;
     }
 
     println!("done.");
@@ -303,6 +318,198 @@ async fn record_deepseek(client: &reqwest::Client, cfg: &ProviderConfig) {
     } else {
         println!("[skip] deepseek: DEEPSEEK_REASONING_MODEL not set");
     }
+}
+
+// ── Anthropic Config ─────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct AnthropicConfig {
+    api_key: String,
+    base_url: String,
+    messages_path: String,
+    model: Option<String>,
+    reasoning_model: Option<String>,
+}
+
+// ── Anthropic scenarios ──────────────────────────────────────────────────────
+
+async fn record_anthropic(client: &reqwest::Client, cfg: &AnthropicConfig) {
+    let Some(model) = cfg.model.as_deref() else {
+        println!("[skip] anthropic: ANTHROPIC_MODEL not set");
+        return;
+    };
+
+    let dir = fixtures_dir("anthropic");
+
+    // chat_simple
+    run_anthropic_chat(
+        client,
+        cfg,
+        &dir,
+        "chat_simple.json",
+        json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Say hi in exactly five words."}],
+            "max_tokens": 256,
+        }),
+    )
+    .await;
+
+    // chat_tool_call
+    let weather_tool = json!({
+        "name": "get_weather",
+        "description": "Get current weather for a city.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"location": {"type": "string"}},
+            "required": ["location"],
+        },
+    });
+    run_anthropic_chat(
+        client,
+        cfg,
+        &dir,
+        "chat_tool_call.json",
+        json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "What is the weather in Paris?"}],
+            "tools": [weather_tool],
+            "tool_choice": {"type": "any"},
+            "max_tokens": 256,
+        }),
+    )
+    .await;
+
+    // stream_simple
+    run_anthropic_stream(
+        client,
+        cfg,
+        &dir,
+        "stream_simple.txt",
+        json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Count from one to three."}],
+            "max_tokens": 256,
+            "stream": true,
+        }),
+    )
+    .await;
+
+    // Reasoning scenario
+    if let Some(rm) = cfg.reasoning_model.as_deref() {
+        let chat_body = json!({
+            "model": rm,
+            "messages": [{"role": "user", "content": "What is 7 times 8? Answer with just the number."}],
+            "max_tokens": 2048,
+            "thinking": {"type": "enabled", "budget_tokens": 1024},
+        });
+        run_anthropic_chat(client, cfg, &dir, "chat_reasoning.json", chat_body.clone()).await;
+
+        let mut stream_body = chat_body;
+        let obj = stream_body.as_object_mut().unwrap();
+        obj.insert("stream".into(), json!(true));
+        run_anthropic_stream(client, cfg, &dir, "stream_reasoning.txt", stream_body).await;
+    } else {
+        println!("[skip] anthropic: ANTHROPIC_REASONING_MODEL not set");
+    }
+}
+
+// ── Anthropic HTTP helpers ────────────────────────────────────────────────────
+
+async fn run_anthropic_chat(
+    client: &reqwest::Client,
+    cfg: &AnthropicConfig,
+    dir: &Path,
+    filename: &str,
+    body: serde_json::Value,
+) {
+    let path = dir.join(filename);
+    print!("[anthropic] -> {} ... ", display_path(&path));
+    let url = format!("{}{}", cfg.base_url.trim_end_matches('/'), cfg.messages_path);
+
+    let resp = match client
+        .post(&url)
+        .header("x-api-key", &cfg.api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            println!("FAIL (send): {e}");
+            return;
+        }
+    };
+    let status = resp.status();
+    let text = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => {
+            println!("FAIL (read): {e}");
+            return;
+        }
+    };
+    if !status.is_success() {
+        println!("HTTP {} — body: {}", status, text);
+        return;
+    }
+    if let Err(e) = std::fs::write(&path, &text) {
+        println!("FAIL (write): {e}");
+        return;
+    }
+    println!("ok ({} bytes)", text.len());
+}
+
+async fn run_anthropic_stream(
+    client: &reqwest::Client,
+    cfg: &AnthropicConfig,
+    dir: &Path,
+    filename: &str,
+    body: serde_json::Value,
+) {
+    let path = dir.join(filename);
+    print!("[anthropic] -> {} (stream) ... ", display_path(&path));
+    let url = format!("{}{}", cfg.base_url.trim_end_matches('/'), cfg.messages_path);
+
+    let resp = match client
+        .post(&url)
+        .header("x-api-key", &cfg.api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            println!("FAIL (send): {e}");
+            return;
+        }
+    };
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        println!("HTTP {} — body: {}", status, text);
+        return;
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(b) => buf.extend_from_slice(&b),
+            Err(e) => {
+                println!("FAIL (stream): {e}");
+                return;
+            }
+        }
+    }
+    if let Err(e) = std::fs::write(&path, &buf) {
+        println!("FAIL (write): {e}");
+        return;
+    }
+    println!("ok ({} bytes)", buf.len());
 }
 
 // ── HTTP helpers ─────────────────────────────────────────────────────────────

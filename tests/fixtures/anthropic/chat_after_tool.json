@@ -1,0 +1,17 @@
+{
+  "id": "msg_03ghi789",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-4-6-20250514",
+  "content": [
+    {"type": "text", "text": "The weather in Paris is currently sunny and 22°C."}
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 80,
+    "output_tokens": 12,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0
+  }
+}
