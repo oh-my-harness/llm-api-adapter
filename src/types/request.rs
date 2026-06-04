@@ -184,6 +184,11 @@ impl ChatRequestBuilder {
         self
     }
 
+    pub fn tools(mut self, ts: Vec<ToolDef>) -> Self {
+        self.tools = ts;
+        self
+    }
+
     pub fn tool_choice(mut self, c: ToolChoice) -> Self {
         self.tool_choice = c;
         self
