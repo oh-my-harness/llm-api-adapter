@@ -228,12 +228,14 @@ fn parse_stop_reason(s: Option<&str>) -> StopReason {
 /// # Arguments
 /// * `response` - The HTTP response with SSE stream
 /// * `parse_reasoning` - Whether to parse reasoning_content from deltas
+/// * `tolerant_keepalive` - Whether to silently skip non-JSON data lines (e.g. DeepSeek keepalives)
 ///
 /// # Returns
 /// A boxed stream of StreamEvent results
 pub fn parse_stream(
     response: reqwest::Response,
     parse_reasoning: bool,
+    tolerant_keepalive: bool,
 ) -> futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>> {
     use eventsource_stream::Eventsource;
     use futures::stream::StreamExt;
@@ -262,7 +264,12 @@ pub fn parse_stream(
                             results = events;
                         }
                         Err(e) => {
-                            results.push(Err(LlmError::Decode(e)));
+                            if tolerant_keepalive {
+                                // Non-JSON data line (e.g. DeepSeek keepalive); skip silently.
+                                let _ = e;
+                            } else {
+                                results.push(Err(LlmError::Decode(e)));
+                            }
                         }
                     }
                 }

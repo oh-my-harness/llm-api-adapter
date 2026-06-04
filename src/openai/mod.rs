@@ -18,6 +18,7 @@ pub struct OpenAIProvider {
     base_url: String,
     chat_path: String,
     parse_reasoning_content: bool,
+    tolerant_keepalive: bool,
 }
 
 /// Builder for OpenAIProvider with fluent configuration API.
@@ -127,7 +128,8 @@ impl OpenAIProvider {
             .send(&oai_req, req.ext.extra_body.as_ref(), true)
             .await?;
         let model = oai_req.model.clone();
-        let stream = stream::parse_stream(response, req.ext.parse_reasoning_content);
+        let tolerant = req.ext.tolerant_keepalive || self.tolerant_keepalive;
+        let stream = stream::parse_stream(response, req.ext.parse_reasoning_content, tolerant);
         Ok(StreamHandle::new(model, stream))
     }
 }
@@ -194,6 +196,7 @@ impl OpenAIProviderBuilder {
             base_url: self.base_url,
             chat_path: self.chat_path,
             parse_reasoning_content: self.parse_reasoning_content,
+            tolerant_keepalive: self.tolerant_keepalive,
         }
     }
 }
