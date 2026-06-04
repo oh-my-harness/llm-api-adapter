@@ -29,10 +29,26 @@ pub struct OpenAIExt {
     /// Reasoning effort for o-series / GPT-5 models ("low", "medium", "high", etc.).
     /// Has no effect on models that do not support reasoning.
     pub reasoning_effort: Option<String>,
+    /// Arbitrary extra fields merged into the request body at the top level.
+    ///
+    /// Useful for provider-specific extensions outside the OpenAI Chat
+    /// Completions schema — e.g. DeepSeek's `thinking: {type: enabled|disabled}`
+    /// to explicitly control thinking mode, or other gateway-specific fields.
+    ///
+    /// Must be a JSON object. Keys override any field already produced by
+    /// the canonical conversion. Mirrors the OpenAI Python SDK's `extra_body`.
+    pub extra_body: Option<serde_json::Value>,
     /// If true, parse DeepSeek reasoning_content field from responses.
     pub parse_reasoning_content: bool,
     /// If true, tolerate keepalive messages in stream (DeepSeek compatibility).
     pub tolerant_keepalive: bool,
+}
+
+impl OpenAIExt {
+    /// Create a new builder for OpenAIExt.
+    pub fn builder() -> OpenAIExtBuilder {
+        OpenAIExtBuilder::default()
+    }
 }
 
 /// Builder for OpenAIExt with fluent API.
@@ -43,6 +59,7 @@ pub struct OpenAIExtBuilder {
     presence_penalty: Option<f32>,
     user: Option<String>,
     reasoning_effort: Option<String>,
+    extra_body: Option<serde_json::Value>,
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
 }
@@ -83,6 +100,13 @@ impl OpenAIExtBuilder {
         self
     }
 
+    /// Provide arbitrary extra request-body fields (must be a JSON object).
+    /// Merged into the request at the top level after canonical conversion.
+    pub fn extra_body(mut self, body: serde_json::Value) -> Self {
+        self.extra_body = Some(body);
+        self
+    }
+
     /// Enable parsing of DeepSeek reasoning_content.
     pub fn parse_reasoning_content(mut self) -> Self {
         self.parse_reasoning_content = true;
@@ -103,6 +127,7 @@ impl OpenAIExtBuilder {
             presence_penalty: self.presence_penalty,
             user: self.user,
             reasoning_effort: self.reasoning_effort,
+            extra_body: self.extra_body,
             parse_reasoning_content: self.parse_reasoning_content,
             tolerant_keepalive: self.tolerant_keepalive,
         }
