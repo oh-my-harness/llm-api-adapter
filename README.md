@@ -419,4 +419,4 @@ examples/
 
 ## License
 
-Not yet specified — set before publishing to crates.io.
+MIT. See [LICENSE](LICENSE).
