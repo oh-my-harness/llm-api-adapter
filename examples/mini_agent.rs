@@ -1,17 +1,33 @@
-//! A mini agent that uses tool calling to answer questions.
+//! An interactive agent REPL that demonstrates multi-turn tool calling.
 //!
-//! The agent has a `calculate` tool and runs the think→act→observe loop
-//! automatically. Supports switching between OpenAI, Anthropic, and DeepSeek.
+//! Type a question, the agent calls tools as needed, answers, then waits for
+//! your follow-up. Type `exit` or `Ctrl-C` to quit.
 //!
 //! Run with:
 //! ```bash
-//! cargo run --example mini_agent -- "What is 234 * 567?"
-//! PROVIDER=anthropic cargo run --example mini_agent -- "If I have 123 apples and give away 45, how many remain?"
-//! PROVIDER=deepseek  cargo run --example mini_agent -- "Calculate 2^10 + 3^5"
+//! cargo run --example mini_agent
+//! cargo run --example mini_agent -- "What's 123 * 456?"
+//! PROVIDER=anthropic cargo run --example mini_agent
+//! PROVIDER=deepseek  cargo run --example mini_agent
+//! ```
+//!
+//! Example session:
+//! ```
+//! You > What is 234 * 567?
+//!   ── turn 1 tool: calculate({"expression":"234*567"}) ──
+//!   → 132678
+//!   ── turn 2 answer ──
+//!   234 * 567 = 132,678
+//!
+//! You > Now add 1000 to that result.
+//!   ── turn 1 tool: calculate({"expression":"132678+1000"}) ──
+//!   → 133678
+//!   ── turn 2 answer ──
+//!   132,678 + 1,000 = 133,678
 //! ```
 //!
 //! Environment variables (from .env or process env):
-//!   PROVIDER            default "openai"
+//!   PROVIDER            "openai" (default), "anthropic", or "deepseek"
 //!   OPENAI_API_KEY / OPENAI_MODEL / OPENAI_BASE_URL / OPENAI_CHAT_PATH
 //!   ANTHROPIC_API_KEY / ANTHROPIC_MODEL / ANTHROPIC_BASE_URL
 //!   DEEPSEEK_API_KEY / DEEPSEEK_MODEL
@@ -24,18 +40,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // ── Tools ──────────────────────────────────────────────────────────────────────
 
-/// Tool definitions shared across all providers.
-fn tools() -> Vec<ToolDef> {
+fn make_tools() -> Vec<ToolDef> {
     vec![
         ToolDef::new(
             "calculate",
-            "Evaluate a mathematical expression. Supports + - * / ** ( ) and built-in functions like sqrt, sin, cos, log, pi, e",
+            "Evaluate a mathematical expression. Supports + - * / ** ( ) and functions: sqrt, sin, cos, tan, log, ln, abs, ceil, floor, round, pi, e",
             json!({
                 "type": "object",
                 "properties": {
                     "expression": {
                         "type": "string",
-                        "description": "Math expression to evaluate, e.g. 234 * 567 or sqrt(144)"
+                        "description": "Math expression to evaluate, e.g. \"234 * 567\""
                     }
                 },
                 "required": ["expression"],
@@ -50,7 +65,7 @@ fn tools() -> Vec<ToolDef> {
                     "format": {
                         "type": "string",
                         "enum": ["iso", "unix"],
-                        "description": "Date format: 'iso' for YYYY-MM-DD, 'unix' for epoch seconds"
+                        "description": "'iso' for YYYY-MM-DD, 'unix' for epoch seconds"
                     }
                 },
                 "required": ["format"],
@@ -59,74 +74,59 @@ fn tools() -> Vec<ToolDef> {
     ]
 }
 
-/// Execute a tool call and return the result.
 fn run_tool(name: &str, args: &serde_json::Value) -> String {
     match name {
         "calculate" => {
             let expr = args.get("expression").and_then(|v| v.as_str()).unwrap_or("");
             match eval_math(expr) {
-                Ok(result) => format!("{result}"),
+                Ok(v) => format!("{v}"),
                 Err(e) => format!("Error: {e}"),
             }
         }
         "get_date" => match args.get("format").and_then(|v| v.as_str()) {
-            Some("unix") => {
-                let secs = SystemTime::now()
+            Some("unix") => format!(
+                "{}",
+                SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs();
-                format!("{secs}")
-            }
+                    .as_secs()
+            ),
             _ => {
-                // ISO 8601 date via a simple approach — format literals.
-                let secs = SystemTime::now()
+                let days = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs();
-                // Days since epoch, then compute year/month/day.
-                let days = secs / 86400;
-                let (year, month, day) = ymd_from_epoch(days as i64);
-                format!("{year:04}-{month:02}-{day:02}")
+                    .as_secs()
+                    / 86400;
+                let (y, m, d) = ymd_from_epoch(days as i64);
+                format!("{y:04}-{m:02}-{d:02}")
             }
         },
         _ => format!("Unknown tool: {name}"),
     }
 }
 
-/// Compute year/month/day from days since Unix epoch.
 fn ymd_from_epoch(mut days: i64) -> (i64, u32, u32) {
-    // Days per month for a given year.
-    fn days_in(y: i64, m: u32) -> i64 {
-        match m {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            4 | 6 | 9 | 11 => 30,
-            2 => {
-                if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-                    29
-                } else {
-                    28
-                }
-            }
-            _ => unreachable!(),
-        }
+    fn is_leap(y: i64) -> bool {
+        y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
     }
-    // Find year (linear search from 1970; fine for our range).
-    let mut y = 1970;
+    let mut y = 1970i64;
     loop {
-        let yd = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-            366
-        } else {
-            365
-        };
+        let yd = if is_leap(y) { 366 } else { 365 };
         if days < yd {
             break;
         }
         days -= yd;
         y += 1;
     }
+    let dim = |m| match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap(y) => 29,
+        _ => 28,
+    };
     let mut m = 1u32;
     loop {
-        let dm = days_in(y, m);
+        let dm = dim(m);
         if days < dm {
             break;
         }
@@ -136,165 +136,146 @@ fn ymd_from_epoch(mut days: i64) -> (i64, u32, u32) {
     (y, m, (days + 1) as u32)
 }
 
-/// Minimal arithmetic expression evaluator (safe, no eval()).
+/// Minimal arithmetic expression evaluator (recursive descent, safe).
 fn eval_math(expr: &str) -> Result<f64, String> {
     let s = expr.trim();
     if s.is_empty() {
         return Err("empty expression".into());
     }
-    // Simple recursive descent: parse term → factor → number / paren / function.
-    let chars: Vec<char> = s.chars().collect();
-    let mut pos = 0;
-    let result = parse_expr(&chars, &mut pos)?;
-    skip_ws(&chars, &mut pos);
-    if pos < chars.len() {
-        return Err(format!("unexpected trailing chars: {:?}", &s[pos..]));
+    let cs: Vec<char> = s.chars().collect();
+    let mut p = 0;
+    let r = expr_inner(&cs, &mut p)?;
+    skip_ws(&cs, &mut p);
+    if p < cs.len() {
+        return Err(format!("unexpected: {:?}", &s[p..]));
     }
-    Ok(result)
+    Ok(r)
 }
-
-fn skip_ws(chars: &[char], pos: &mut usize) {
-    while *pos < chars.len() && chars[*pos].is_ascii_whitespace() {
-        *pos += 1;
+fn skip_ws(cs: &[char], p: &mut usize) {
+    while *p < cs.len() && cs[*p].is_ascii_whitespace() {
+        *p += 1;
     }
 }
-
-// expression := term ( '+' | '-' term )*
-fn parse_expr(chars: &[char], pos: &mut usize) -> Result<f64, String> {
-    let mut val = parse_term(chars, pos)?;
+fn expr_inner(cs: &[char], p: &mut usize) -> Result<f64, String> {
+    let mut v = term(cs, p)?;
     loop {
-        skip_ws(chars, pos);
-        if *pos >= chars.len() {
+        skip_ws(cs, p);
+        if *p >= cs.len() {
             break;
         }
-        match chars[*pos] {
+        match cs[*p] {
             '+' => {
-                *pos += 1;
-                val += parse_term(chars, pos)?;
+                *p += 1;
+                v += term(cs, p)?;
             }
             '-' => {
-                *pos += 1;
-                val -= parse_term(chars, pos)?;
+                *p += 1;
+                v -= term(cs, p)?;
             }
             _ => break,
         }
     }
-    Ok(val)
+    Ok(v)
 }
-
-// term := factor ( '*' | '/' factor )*
-fn parse_term(chars: &[char], pos: &mut usize) -> Result<f64, String> {
-    let mut val = parse_power(chars, pos)?;
+fn term(cs: &[char], p: &mut usize) -> Result<f64, String> {
+    let mut v = power(cs, p)?;
     loop {
-        skip_ws(chars, pos);
-        if *pos >= chars.len() {
+        skip_ws(cs, p);
+        if *p >= cs.len() {
             break;
         }
-        match chars[*pos] {
+        match cs[*p] {
             '*' => {
-                *pos += 1;
-                val *= parse_power(chars, pos)?;
+                *p += 1;
+                v *= power(cs, p)?;
             }
             '/' => {
-                *pos += 1;
-                let denom = parse_power(chars, pos)?;
-                if denom == 0.0 {
+                *p += 1;
+                let d = power(cs, p)?;
+                if d == 0.0 {
                     return Err("division by zero".into());
                 }
-                val /= denom;
+                v /= d;
             }
             _ => break,
         }
     }
-    Ok(val)
+    Ok(v)
 }
-
-// power := factor ( '**' factor )?
-fn parse_power(chars: &[char], pos: &mut usize) -> Result<f64, String> {
-    let base = parse_unary(chars, pos)?;
-    skip_ws(chars, pos);
-    if *pos < chars.len() && chars[*pos] == '*' && *pos + 1 < chars.len() && chars[*pos + 1] == '*' {
-        *pos += 2;
-        let exp = parse_power(chars, pos)?;
-        return Ok(base.powf(exp));
+fn power(cs: &[char], p: &mut usize) -> Result<f64, String> {
+    let b = unary(cs, p)?;
+    skip_ws(cs, p);
+    if *p + 1 < cs.len() && cs[*p] == '*' && cs[*p + 1] == '*' {
+        *p += 2;
+        let e = power(cs, p)?;
+        return Ok(b.powf(e));
     }
-    Ok(base)
+    Ok(b)
 }
-
-// unary := '-' factor | '+' factor | factor
-fn parse_unary(chars: &[char], pos: &mut usize) -> Result<f64, String> {
-    skip_ws(chars, pos);
-    if *pos >= chars.len() {
-        return Err("unexpected end of expression".into());
+fn unary(cs: &[char], p: &mut usize) -> Result<f64, String> {
+    skip_ws(cs, p);
+    if *p >= cs.len() {
+        return Err("unexpected end".into());
     }
-    if chars[*pos] == '-' {
-        *pos += 1;
-        return Ok(-parse_atom(chars, pos)?);
+    if cs[*p] == '-' {
+        *p += 1;
+        return Ok(-atom(cs, p)?);
     }
-    if chars[*pos] == '+' {
-        *pos += 1;
+    if cs[*p] == '+' {
+        *p += 1;
     }
-    parse_atom(chars, pos)
+    atom(cs, p)
 }
-
-// atom := number | '(' expr ')' | function_call | constant
-fn parse_atom(chars: &[char], pos: &mut usize) -> Result<f64, String> {
-    skip_ws(chars, pos);
-    if *pos >= chars.len() {
-        return Err("unexpected end of expression".into());
+fn atom(cs: &[char], p: &mut usize) -> Result<f64, String> {
+    skip_ws(cs, p);
+    if *p >= cs.len() {
+        return Err("unexpected end".into());
     }
-
-    // '(' expr ')'
-    if chars[*pos] == '(' {
-        *pos += 1;
-        let val = parse_expr(chars, pos)?;
-        skip_ws(chars, pos);
-        if *pos >= chars.len() || chars[*pos] != ')' {
-            return Err("missing closing parenthesis".into());
+    if cs[*p] == '(' {
+        *p += 1;
+        let v = expr_inner(cs, p)?;
+        skip_ws(cs, p);
+        if *p >= cs.len() || cs[*p] != ')' {
+            return Err("missing ')'".into());
         }
-        *pos += 1;
-        return Ok(val);
+        *p += 1;
+        return Ok(v);
     }
-
-    // Try to parse a function or named constant
-    if chars[*pos].is_ascii_alphabetic() || chars[*pos] == '_' {
-        let start = *pos;
-        while *pos < chars.len() && (chars[*pos].is_ascii_alphanumeric() || chars[*pos] == '_') {
-            *pos += 1;
+    if cs[*p].is_ascii_alphabetic() || cs[*p] == '_' {
+        let s = *p;
+        while *p < cs.len() && (cs[*p].is_ascii_alphanumeric() || cs[*p] == '_') {
+            *p += 1;
         }
-        let name: String = chars[start..*pos].iter().collect();
+        let name: String = cs[s..*p].iter().collect();
         let name = name.to_lowercase();
-
-        // Named constants
         return match name.as_str() {
             "pi" => Ok(std::f64::consts::PI),
             "e" => Ok(std::f64::consts::E),
-            // Functions with argument in parentheses
             _ => {
-                skip_ws(chars, pos);
-                if *pos < chars.len() && chars[*pos] == '(' {
-                    *pos += 1; // '('
-                    let arg = parse_expr(chars, pos)?;
-                    skip_ws(chars, pos);
-                    if *pos >= chars.len() || chars[*pos] != ')' {
+                skip_ws(cs, p);
+                if *p < cs.len() && cs[*p] == '(' {
+                    *p += 1;
+                    let a = expr_inner(cs, p)?;
+                    skip_ws(cs, p);
+                    if *p >= cs.len() || cs[*p] != ')' {
                         return Err(format!("missing ) after {name}"));
                     }
-                    *pos += 1; // ')'
+                    *p += 1;
                     match name.as_str() {
-                        "sqrt" => Ok(arg.sqrt()),
-                        "abs" => Ok(arg.abs()),
-                        "sin" => Ok(arg.sin()),
-                        "cos" => Ok(arg.cos()),
-                        "tan" => Ok(arg.tan()),
-                        "asin" => Ok(arg.asin()),
-                        "acos" => Ok(arg.acos()),
-                        "atan" => Ok(arg.atan()),
-                        "ln" | "log" => Ok(arg.ln()),
-                        "log10" => Ok(arg.log10()),
-                        "ceil" => Ok(arg.ceil()),
-                        "floor" => Ok(arg.floor()),
-                        "round" => Ok(arg.round()),
-                        _ => Err(format!("unknown function: {name}")),
+                        "sqrt" => Ok(a.sqrt()),
+                        "abs" => Ok(a.abs()),
+                        "sin" => Ok(a.sin()),
+                        "cos" => Ok(a.cos()),
+                        "tan" => Ok(a.tan()),
+                        "asin" => Ok(a.asin()),
+                        "acos" => Ok(a.acos()),
+                        "atan" => Ok(a.atan()),
+                        "ln" | "log" => Ok(a.ln()),
+                        "log10" => Ok(a.log10()),
+                        "ceil" => Ok(a.ceil()),
+                        "floor" => Ok(a.floor()),
+                        "round" => Ok(a.round()),
+                        _ => Err(format!("unknown: {name}")),
                     }
                 } else {
                     Err(format!("unknown identifier: {name}"))
@@ -302,57 +283,54 @@ fn parse_atom(chars: &[char], pos: &mut usize) -> Result<f64, String> {
             }
         };
     }
-
-    // Number
-    parse_number(chars, pos)
-}
-
-fn parse_number(chars: &[char], pos: &mut usize) -> Result<f64, String> {
-    skip_ws(chars, pos);
-    let start = *pos;
-    let mut has_dot = false;
-    while *pos < chars.len() {
-        match chars[*pos] {
-            '0'..='9' => *pos += 1,
-            '.' if !has_dot => {
-                has_dot = true;
-                *pos += 1;
-            }
-            _ => break,
+    let s = *p;
+    let mut dot = false;
+    while *p < cs.len() && (cs[*p].is_ascii_digit() || (!dot && cs[*p] == '.')) {
+        if cs[*p] == '.' {
+            dot = true;
         }
+        *p += 1;
     }
-    if *pos == start {
-        return Err(format!(
-            "expected number at position {pos}: {:?}",
-            if start < chars.len() {
-                chars[start..].iter().collect::<String>()
-            } else {
-                "<end>".into()
-            }
-        ));
+    if *p == s {
+        return Err(format!("expected number at {p}"));
     }
-    let s: String = chars[start..*pos].iter().collect();
-    s.parse::<f64>().map_err(|e| format!("invalid number '{s}': {e}"))
+    cs[s..*p]
+        .iter()
+        .collect::<String>()
+        .parse::<f64>()
+        .map_err(|e| format!("bad number: {e}"))
 }
 
 // ── Agent loop ─────────────────────────────────────────────────────────────────
 
-/// Execute the full agent loop: call the LLM, handle tool calls, repeat until done.
-async fn run_agent(
+/// Process one user message through the full think→act→observe loop.
+/// Returns accumulated messages including the new exchange.
+async fn handle_turn(
     provider: &dyn Provider,
-    mut req: ChatRequest,
-    max_turns: usize,
+    messages: &mut Vec<Message>,
+    user_text: &str,
+    tools: &[ToolDef],
+    model: &str,
+    max_tool_turns: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    for turn in 1..=max_turns {
-        // Call the LLM
+    messages.push(Message::User(vec![RequestContent::Text(
+        user_text.to_owned(),
+    )]));
+
+    for turn in 1..=max_tool_turns {
+        let req = ChatRequest::builder(model, 1024)
+            .messages(messages.clone())
+            .tools(tools.to_vec())
+            .build();
+
         let resp = provider.chat(&req).await?;
 
-        // Show reasoning if present
+        // Show reasoning
         if let Some(r) = resp.reasoning() {
-            println!("\n── [turn {turn}] reasoning ──\n{r}\n");
+            println!("\n  ── reasoning ──\n{r}\n");
         }
 
-        // Collect tool invocations before moving resp
+        // Extract data before consuming resp
         let tool_invocations: Vec<_> = resp.tool_invocations().cloned().collect();
         let resp_text = resp.text();
         let resp_usage = (
@@ -361,23 +339,23 @@ async fn run_agent(
             resp.usage.cached_input_tokens,
             resp.usage.reasoning_tokens,
         );
+        let assistant_msg = resp.into_message();
+        messages.push(assistant_msg);
 
         if tool_invocations.is_empty() {
-            // No tool calls → final answer
-            println!("── [turn {turn}] answer ──\n{resp_text}\n");
+            // Final answer — done with this user message
+            println!("  ── answer ──\n{resp_text}");
             println!(
-                "[usage: {} in / {} out / {} cached / {} reasoning]",
+                "  [input:{} output:{} cached:{} reasoning:{}]",
                 resp_usage.0, resp_usage.1, resp_usage.2, resp_usage.3,
             );
             return Ok(());
         }
 
-        // Execute each tool call and build next request
-        let mut messages = req.messages().to_vec();
-        messages.push(resp.into_message());
+        // Execute tool calls
         for inv in &tool_invocations {
             println!(
-                "── [turn {turn}] tool: {}({}) ──",
+                "  ── turn {turn} tool: {}({}) ──",
                 inv.name, inv.input
             );
             let result = run_tool(&inv.name, &inv.input);
@@ -388,25 +366,12 @@ async fn run_agent(
                 is_error: false,
             });
         }
-
-        let mut builder = ChatRequest::builder(req.model().to_owned(), req.params().max_tokens())
-            .messages(messages)
-            .tools(req.tools().to_vec())
-            .tool_choice(req.tool_choice().clone());
-        if let Some(t) = req.params().temperature() {
-            builder = builder.temperature(t);
-        }
-        if let Some(p) = req.params().top_p() {
-            builder = builder.top_p(p);
-        }
-        req = builder.build();
     }
 
-    eprintln!("[agent] max turns ({max_turns}) reached, stopping");
-    Ok(())
+    Err("max tool turns reached".into())
 }
 
-// ── CLI ─────────────────────────────────────────────────────────────────────────
+// ── Entry point ────────────────────────────────────────────────────────────────
 
 fn load_env() {
     let Ok(s) = std::fs::read_to_string(".env") else {
@@ -429,94 +394,120 @@ fn load_env() {
     }
 }
 
+fn build_provider() -> Result<(Box<dyn Provider>, String), Box<dyn std::error::Error>> {
+    let kind = std::env::var("PROVIDER").unwrap_or_else(|_| "openai".into());
+    let (p, model) = match kind.as_str() {
+        "deepseek" => {
+            let key =
+                std::env::var("DEEPSEEK_API_KEY").map_err(|_| "DEEPSEEK_API_KEY not set")?;
+            let m = std::env::var("DEEPSEEK_MODEL")
+                .unwrap_or_else(|_| "deepseek-v4-flash".into());
+            (Box::new(deepseek::client(key)) as Box<dyn Provider>, m)
+        }
+        "openai" => {
+            let key = std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY not set")?;
+            let base =
+                std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
+            let path = std::env::var("OPENAI_CHAT_PATH")
+                .unwrap_or_else(|_| "/v1/chat/completions".into());
+            let m = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
+            (
+                Box::new(
+                    OpenAIProvider::builder(key).base_url(base).chat_path(path).build(),
+                ) as Box<dyn Provider>,
+                m,
+            )
+        }
+        "anthropic" => {
+            let key =
+                std::env::var("ANTHROPIC_API_KEY").map_err(|_| "ANTHROPIC_API_KEY not set")?;
+            let base = std::env::var("ANTHROPIC_BASE_URL")
+                .unwrap_or_else(|_| "https://api.anthropic.com".into());
+            let path = std::env::var("ANTHROPIC_MESSAGES_PATH")
+                .unwrap_or_else(|_| "/v1/messages".into());
+            let m = std::env::var("ANTHROPIC_MODEL")
+                .unwrap_or_else(|_| "claude-sonnet-4-6-20250514".into());
+            (
+                Box::new(
+                    AnthropicProvider::builder(key)
+                        .base_url(base)
+                        .messages_path(path)
+                        .build(),
+                ) as Box<dyn Provider>,
+                m,
+            )
+        }
+        other => return Err(format!("PROVIDER={other} (use openai|anthropic|deepseek)").into()),
+    };
+    Ok((p, model))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     load_env();
-
-    // ── Pick the provider ──────────────────────────────────────────────────────
-
-    let kind = std::env::var("PROVIDER").unwrap_or_else(|_| "openai".into());
-
-    let (provider, model): (Box<dyn Provider>, String) = match kind.as_str() {
-        "deepseek" => {
-            let api_key = std::env::var("DEEPSEEK_API_KEY")
-                .map_err(|_| "DEEPSEEK_API_KEY is not set")?;
-            let model =
-                std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
-            (Box::new(deepseek::client(api_key)), model)
-        }
-        "openai" => {
-            let api_key =
-                std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY is not set")?;
-            let base_url = std::env::var("OPENAI_BASE_URL")
-                .unwrap_or_else(|_| "https://api.openai.com".into());
-            let chat_path =
-                std::env::var("OPENAI_CHAT_PATH").unwrap_or_else(|_| "/v1/chat/completions".into());
-            let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
-            let p = OpenAIProvider::builder(api_key)
-                .base_url(base_url)
-                .chat_path(chat_path)
-                .build();
-            (Box::new(p), model)
-        }
-        "anthropic" => {
-            let api_key =
-                std::env::var("ANTHROPIC_API_KEY").map_err(|_| "ANTHROPIC_API_KEY is not set")?;
-            let base_url = std::env::var("ANTHROPIC_BASE_URL")
-                .unwrap_or_else(|_| "https://api.anthropic.com".into());
-            let messages_path = std::env::var("ANTHROPIC_MESSAGES_PATH")
-                .unwrap_or_else(|_| "/v1/messages".into());
-            let model = std::env::var("ANTHROPIC_MODEL")
-                .unwrap_or_else(|_| "claude-sonnet-4-6-20250514".into());
-            let p = AnthropicProvider::builder(api_key)
-                .base_url(base_url)
-                .messages_path(messages_path)
-                .build();
-            (Box::new(p), model)
-        }
-        other => {
-            return Err(format!("Unknown PROVIDER={other} (expected openai, deepseek, or anthropic)").into());
-        }
-    };
-
-    // ── Get the question ───────────────────────────────────────────────────────
-
-    let question: String = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
-    let question = if question.is_empty() {
-        "What is 234 * 567? Then add 1000 to that result.".to_string()
-    } else {
-        question
-    };
+    let (provider, model) = build_provider()?;
 
     println!("╔══════════════════════════════════════════════╗");
     println!("║         llm_adapter — Mini Agent Demo        ║");
     println!("╚══════════════════════════════════════════════╝");
+    println!(
+        "  provider  {}",
+        std::env::var("PROVIDER").unwrap_or_else(|_| "openai".into())
+    );
+    println!("  model     {model}");
+    println!("  tools     calculate, get_date");
     println!();
-    println!("provider: {kind}");
-    println!("model:    {model}");
-    println!("question: {question}");
+    println!("Type a question, or `exit` to quit.");
     println!();
 
-    // ── First request ──────────────────────────────────────────────────────────
-
-    let req = ChatRequest::builder(model, 1024)
-        .message(Message::System(
-            "You are a helpful assistant with access to tools. \
-             When you need to calculate something, use the calculate tool. \
-             Use get_date when you need the current date. \
-             Think step by step — you may need multiple tool calls."
+    let tools = make_tools();
+    let mut messages = vec![
+        Message::System(
+            "You are a helpful assistant with access to tools: \
+             calculate (evaluate math expressions) and get_date (current date). \
+             Use tools when you need to compute something. \
+             If the user refers to a previous result, compute it again—you \
+             don't have memory of tool outputs across turns."
                 .into(),
-        ))
-        .message(Message::User(vec![RequestContent::Text(question)]))
-        .tools(tools())
-        .build();
+        ),
+    ];
 
-    // ── Agent loop ──────────────────────────────────────────────────────────────
+    // Check for one-shot question from CLI args
+    let arg_text: String = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
+    let one_shot = if arg_text.is_empty() { None } else { Some(arg_text) };
 
-    if let Err(e) = run_agent(provider.as_ref(), req, 5).await {
-        eprintln!("agent stopped: {e}");
+    if let Some(q) = &one_shot {
+        println!("You > {q}");
+        if let Err(e) = handle_turn(provider.as_ref(), &mut messages, q, &tools, &model, 5).await {
+            eprintln!("  [{e}]");
+        }
+        println!();
+        return Ok(());
     }
 
-    println!("── agent finished ──");
+    // Interactive REPL
+    let stdin = std::io::stdin();
+    let mut input = String::new();
+    loop {
+        print!("You > ");
+        use std::io::Write;
+        std::io::stdout().flush()?;
+
+        input.clear();
+        if stdin.read_line(&mut input)? == 0 {
+            break; // EOF
+        }
+        let line = input.trim();
+        if line.is_empty() || line == "exit" || line == "quit" {
+            break;
+        }
+
+        if let Err(e) = handle_turn(provider.as_ref(), &mut messages, line, &tools, &model, 5).await {
+            eprintln!("  [{e}]");
+        }
+        println!();
+    }
+
+    println!("── bye ──");
     Ok(())
 }
