@@ -48,10 +48,11 @@ impl OpenAIProvider {
     async fn send(
         &self,
         oai_req: &schema::OaiRequest,
+        extra_body: Option<&serde_json::Value>,
         _stream: bool,
     ) -> Result<reqwest::Response, LlmError> {
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), self.chat_path);
-        let body = serde_json::to_string(oai_req)?;
+        let body = merge_extra_body(oai_req, extra_body)?;
 
         let req = self.client.post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
@@ -104,21 +105,47 @@ impl OpenAIProvider {
     }
 
     /// Chat completion using the native OpenAI path (non-streaming).
-    async fn chat_native(&self, req: &OpenAIRequest) -> Result<ChatResponse, LlmError> {
+    ///
+    /// Accepts `OpenAIRequest` (a `ChatRequest` paired with `OpenAIExt`) so
+    /// callers can opt into provider-specific extensions — seed, penalties,
+    /// `reasoning_effort`, `extra_body`, etc. — without sacrificing the
+    /// type-safe canonical request shape.
+    pub async fn chat_native(&self, req: &OpenAIRequest) -> Result<ChatResponse, LlmError> {
         let oai_req = convert::to_oai(&req.base, Some(&req.ext), false)?;
-        let response = self.send(&oai_req, false).await?;
+        let response = self.send(&oai_req, req.ext.extra_body.as_ref(), false).await?;
         let oai_resp = response.json::<schema::OaiResponse>().await?;
         convert::from_oai(oai_resp, req.ext.parse_reasoning_content)
     }
 
     /// Chat completion using the native OpenAI path (streaming).
-    async fn chat_stream_native(&self, req: &OpenAIRequest) -> Result<StreamHandle, LlmError> {
+    pub async fn chat_stream_native(&self, req: &OpenAIRequest) -> Result<StreamHandle, LlmError> {
         let oai_req = convert::to_oai(&req.base, Some(&req.ext), true)?;
-        let response = self.send(&oai_req, true).await?;
+        let response = self.send(&oai_req, req.ext.extra_body.as_ref(), true).await?;
         let model = oai_req.model.clone();
         let stream = stream::parse_stream(response, req.ext.parse_reasoning_content);
         Ok(StreamHandle::new(model, stream))
     }
+}
+
+/// Serialise an OpenAI request body, merging any caller-supplied `extra_body`
+/// fields at the top level. Extra-body keys override canonical-conversion
+/// keys, so callers can e.g. set `thinking: {type: disabled}` or any other
+/// non-standard field accepted by an OpenAI-compatible endpoint.
+fn merge_extra_body(
+    oai_req: &schema::OaiRequest,
+    extra_body: Option<&serde_json::Value>,
+) -> Result<String, LlmError> {
+    let mut body = serde_json::to_value(oai_req)?;
+    if let Some(extra) = extra_body {
+        let extra_obj = extra.as_object().ok_or_else(|| {
+            LlmError::InvalidRequest("OpenAIExt.extra_body must be a JSON object".into())
+        })?;
+        let body_obj = body.as_object_mut().expect("OaiRequest serializes to object");
+        for (k, v) in extra_obj {
+            body_obj.insert(k.clone(), v.clone());
+        }
+    }
+    Ok(serde_json::to_string(&body)?)
 }
 
 impl OpenAIProviderBuilder {

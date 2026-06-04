@@ -213,3 +213,75 @@ async fn reasoning_tokens_populated_from_completion_details() {
     assert!(resp.reasoning().is_some(), "reasoning content should be parsed when parse_reasoning_content is enabled");
     assert!(!resp.text().is_empty());
 }
+
+#[tokio::test]
+async fn extra_body_is_merged_into_request() {
+    // Verify OpenAIExt.extra_body adds top-level fields to the outgoing JSON.
+    // Useful for provider-specific extensions like DeepSeek's `thinking` field.
+    use llm_adapter::openai::{OpenAIExt, OpenAIRequest};
+
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/chat/completions"))
+        .and(wiremock::matchers::body_partial_json(serde_json::json!({
+            "thinking": {"type": "disabled"},
+            "custom_flag": true
+        })))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_raw(
+                include_str!("fixtures/openai/chat_simple.json"),
+                "application/json",
+            ),
+        )
+        .mount(&server)
+        .await;
+
+    let p = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .build();
+
+    let ext = OpenAIExt::builder()
+        .extra_body(serde_json::json!({
+            "thinking": {"type": "disabled"},
+            "custom_flag": true,
+        }))
+        .build();
+    let req = OpenAIRequest {
+        base: ChatRequest::builder("gpt-4o", 64)
+            .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+            .build(),
+        ext,
+    };
+
+    let resp = p.chat_native(&req).await.unwrap();
+    // The mock only matches when the request body contains both extra_body keys
+    // at the top level — reaching this assertion proves the merge worked.
+    assert!(!resp.text().is_empty());
+}
+
+#[tokio::test]
+async fn extra_body_rejects_non_object() {
+    use llm_adapter::openai::{OpenAIExt, OpenAIRequest};
+
+    let server = MockServer::start().await;
+    // No mock mounted; we expect to fail before HTTP.
+    let p = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .build();
+
+    let ext = OpenAIExt::builder()
+        .extra_body(serde_json::json!("not an object"))
+        .build();
+    let req = OpenAIRequest {
+        base: ChatRequest::builder("gpt-4o", 64)
+            .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+            .build(),
+        ext,
+    };
+
+    let err = p.chat_native(&req).await.unwrap_err();
+    assert!(
+        matches!(err, LlmError::InvalidRequest(ref m) if m.contains("extra_body")),
+        "expected InvalidRequest about extra_body, got: {:?}", err
+    );
+}

@@ -266,3 +266,32 @@ async fn integration_reasoning_stream() {
         .expect("text block missing");
     assert!(reasoning_idx < text_idx);
 }
+
+#[tokio::test]
+async fn integration_tool_call_required_via_extra_body_disable_thinking() {
+    // DeepSeek V4 rejects `tool_choice: required` while thinking is enabled.
+    // Use OpenAIExt.extra_body to send `thinking: {type: disabled}` and then
+    // Required becomes legal.
+    let Some((p, model)) = provider() else { return; };
+    use llm_adapter::openai::{OpenAIExt, OpenAIRequest};
+
+    let ext = OpenAIExt::builder()
+        .extra_body(serde_json::json!({"thinking": {"type": "disabled"}}))
+        .build();
+    let oai_req = OpenAIRequest {
+        base: ChatRequest::builder(model, 256)
+            .message(Message::User(vec![RequestContent::Text(
+                "What's the weather in Paris?".into(),
+            )]))
+            .tool(weather_tool())
+            .tool_choice(ToolChoice::Required)
+            .build(),
+        ext,
+    };
+
+    let resp = p.chat_native(&oai_req).await.expect("native chat failed");
+    assert!(matches!(resp.stop_reason, StopReason::ToolUse));
+    let invocations: Vec<_> = resp.tool_invocations().collect();
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0].name, "get_weather");
+}
