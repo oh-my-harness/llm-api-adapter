@@ -340,6 +340,15 @@ async fn record_anthropic(client: &reqwest::Client, cfg: &AnthropicConfig) {
     };
 
     let dir = fixtures_dir("anthropic");
+    let weather_tool = json!({
+        "name": "get_weather",
+        "description": "Get current weather for a city.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"location": {"type": "string"}},
+            "required": ["location"],
+        },
+    });
 
     // chat_simple
     run_anthropic_chat(
@@ -356,15 +365,6 @@ async fn record_anthropic(client: &reqwest::Client, cfg: &AnthropicConfig) {
     .await;
 
     // chat_tool_call
-    let weather_tool = json!({
-        "name": "get_weather",
-        "description": "Get current weather for a city.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"location": {"type": "string"}},
-            "required": ["location"],
-        },
-    });
     run_anthropic_chat(
         client,
         cfg,
@@ -376,6 +376,47 @@ async fn record_anthropic(client: &reqwest::Client, cfg: &AnthropicConfig) {
             "tools": [weather_tool],
             "tool_choice": {"type": "any"},
             "max_tokens": 256,
+        }),
+    )
+    .await;
+
+    // chat_after_tool: multi-turn tool result follow-up
+    // First extract the actual tool_use ID from chat_tool_call response, then feed back.
+    let tool_call_path = dir.join("chat_tool_call.json");
+    let tool_use_id = if let Ok(text) = std::fs::read_to_string(&tool_call_path) {
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| {
+                v["content"]
+                    .as_array()?
+                    .iter()
+                    .find(|b| b["type"] == "tool_use")?
+                    .get("id")?
+                    .as_str()
+                    .map(String::from)
+            })
+            .unwrap_or_else(|| "call_fallback".into())
+    } else {
+        "call_fallback".into()
+    };
+
+    run_anthropic_chat(
+        client,
+        cfg,
+        &dir,
+        "chat_after_tool.json",
+        json!({
+            "model": model,
+            "max_tokens": 256,
+            "messages": [
+                {"role": "user", "content": "What is the weather in Paris?"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": tool_use_id, "name": "get_weather", "input": {"location": "Paris"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": tool_use_id, "content": "Sunny, 22°C"}
+                ]}
+            ],
         }),
     )
     .await;
@@ -395,13 +436,29 @@ async fn record_anthropic(client: &reqwest::Client, cfg: &AnthropicConfig) {
     )
     .await;
 
+    // stream_tool_call
+    run_anthropic_stream(
+        client,
+        cfg,
+        &dir,
+        "stream_tool_call.txt",
+        json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "What is the weather in London?"}],
+            "tools": [weather_tool],
+            "tool_choice": {"type": "any"},
+            "max_tokens": 256,
+            "stream": true,
+        }),
+    )
+    .await;
+
     // Reasoning scenario
     if let Some(rm) = cfg.reasoning_model.as_deref() {
         let chat_body = json!({
             "model": rm,
             "messages": [{"role": "user", "content": "What is 7 times 8? Answer with just the number."}],
             "max_tokens": 2048,
-            "thinking": {"type": "enabled", "budget_tokens": 1024},
         });
         run_anthropic_chat(client, cfg, &dir, "chat_reasoning.json", chat_body.clone()).await;
 
