@@ -356,7 +356,9 @@ fn assistant_content_to_wire(content: &[ResponseContent]) -> AnthropicWireMessag
                 // path, (b) collecting a streamed response (chat_stream_native), or
                 // (c) mixing non-Anthropic reasoning into an Anthropic request.
                 // Encode as text as a best-effort fallback.
-                tracing::warn!("Reasoning block has no signature; encoding as text for Anthropic request");
+                tracing::warn!(
+                    "Reasoning block has no signature; encoding as text for Anthropic request"
+                );
                 blocks.push(AnthropicContentBlock::Text {
                     text: text.clone(),
                     cache_control: None,
@@ -542,10 +544,17 @@ fn anthropic_response_block_to_canonical(block: AnthropicResponseBlock) -> Optio
             Some(ResponseContent::Text(text))
         }
         AnthropicResponseBlock::Text { .. } => None,
-        AnthropicResponseBlock::ToolUse { id, name, input } => Some(
-            ResponseContent::ToolInvocation(ToolInvocation { id, name, input }),
-        ),
-        AnthropicResponseBlock::Thinking { thinking, signature } if !thinking.is_empty() => {
+        AnthropicResponseBlock::ToolUse { id, name, input } => {
+            Some(ResponseContent::ToolInvocation(ToolInvocation {
+                id,
+                name,
+                input,
+            }))
+        }
+        AnthropicResponseBlock::Thinking {
+            thinking,
+            signature,
+        } if !thinking.is_empty() => {
             let sig = if signature.is_empty() {
                 None
             } else {
@@ -1035,7 +1044,9 @@ mod tests {
             model: "claude-sonnet-4-20250514".into(),
             content: vec![
                 AnthropicResponseBlock::Text { text: "".into() },
-                AnthropicResponseBlock::Text { text: "Hello".into() },
+                AnthropicResponseBlock::Text {
+                    text: "Hello".into(),
+                },
             ],
             stop_reason: Some("end_turn".into()),
             stop_sequence: None,

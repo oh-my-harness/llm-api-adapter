@@ -77,7 +77,10 @@ fn make_tools() -> Vec<ToolDef> {
 fn run_tool(name: &str, args: &serde_json::Value) -> String {
     match name {
         "calculate" => {
-            let expr = args.get("expression").and_then(|v| v.as_str()).unwrap_or("");
+            let expr = args
+                .get("expression")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             match eval_math(expr) {
                 Ok(v) => format!("{v}"),
                 Err(e) => format!("Error: {e}"),
@@ -354,10 +357,7 @@ async fn handle_turn(
 
         // Execute tool calls
         for inv in &tool_invocations {
-            println!(
-                "  ── turn {turn} tool: {}({}) ──",
-                inv.name, inv.input
-            );
+            println!("  ── turn {turn} tool: {}({}) ──", inv.name, inv.input);
             let result = run_tool(&inv.name, &inv.input);
             println!("  → {result}");
             messages.push(Message::Tool {
@@ -398,22 +398,23 @@ fn build_provider() -> Result<(Box<dyn Provider>, String), Box<dyn std::error::E
     let kind = std::env::var("PROVIDER").unwrap_or_else(|_| "openai".into());
     let (p, model) = match kind.as_str() {
         "deepseek" => {
-            let key =
-                std::env::var("DEEPSEEK_API_KEY").map_err(|_| "DEEPSEEK_API_KEY not set")?;
-            let m = std::env::var("DEEPSEEK_MODEL")
-                .unwrap_or_else(|_| "deepseek-v4-flash".into());
+            let key = std::env::var("DEEPSEEK_API_KEY").map_err(|_| "DEEPSEEK_API_KEY not set")?;
+            let m = std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
             (Box::new(deepseek::client(key)) as Box<dyn Provider>, m)
         }
         "openai" => {
             let key = std::env::var("OPENAI_API_KEY").map_err(|_| "OPENAI_API_KEY not set")?;
-            let base =
-                std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
-            let path = std::env::var("OPENAI_CHAT_PATH")
-                .unwrap_or_else(|_| "/v1/chat/completions".into());
+            let base = std::env::var("OPENAI_BASE_URL")
+                .unwrap_or_else(|_| "https://api.openai.com".into());
+            let path =
+                std::env::var("OPENAI_CHAT_PATH").unwrap_or_else(|_| "/v1/chat/completions".into());
             let m = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
             (
                 Box::new(
-                    OpenAIProvider::builder(key).base_url(base).chat_path(path).build(),
+                    OpenAIProvider::builder(key)
+                        .base_url(base)
+                        .chat_path(path)
+                        .build(),
                 ) as Box<dyn Provider>,
                 m,
             )
@@ -423,8 +424,8 @@ fn build_provider() -> Result<(Box<dyn Provider>, String), Box<dyn std::error::E
                 std::env::var("ANTHROPIC_API_KEY").map_err(|_| "ANTHROPIC_API_KEY not set")?;
             let base = std::env::var("ANTHROPIC_BASE_URL")
                 .unwrap_or_else(|_| "https://api.anthropic.com".into());
-            let path = std::env::var("ANTHROPIC_MESSAGES_PATH")
-                .unwrap_or_else(|_| "/v1/messages".into());
+            let path =
+                std::env::var("ANTHROPIC_MESSAGES_PATH").unwrap_or_else(|_| "/v1/messages".into());
             let m = std::env::var("ANTHROPIC_MODEL")
                 .unwrap_or_else(|_| "claude-sonnet-4-6-20250514".into());
             (
@@ -461,20 +462,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     let tools = make_tools();
-    let mut messages = vec![
-        Message::System(
-            "You are a helpful assistant with access to tools: \
+    let mut messages = vec![Message::System(
+        "You are a helpful assistant with access to tools: \
              calculate (evaluate math expressions) and get_date (current date). \
              Use tools when you need to compute something. \
              If the user refers to a previous result, compute it again—you \
              don't have memory of tool outputs across turns."
-                .into(),
-        ),
-    ];
+            .into(),
+    )];
 
     // Check for one-shot question from CLI args
     let arg_text: String = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
-    let one_shot = if arg_text.is_empty() { None } else { Some(arg_text) };
+    let one_shot = if arg_text.is_empty() {
+        None
+    } else {
+        Some(arg_text)
+    };
 
     if let Some(q) = &one_shot {
         println!("You > {q}");
@@ -502,7 +505,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
 
-        if let Err(e) = handle_turn(provider.as_ref(), &mut messages, line, &tools, &model, 5).await {
+        if let Err(e) = handle_turn(provider.as_ref(), &mut messages, line, &tools, &model, 5).await
+        {
             eprintln!("  [{e}]");
         }
         println!();
