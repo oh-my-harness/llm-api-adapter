@@ -2,7 +2,7 @@
 
 *[English](README.md)*
 
-一个 Rust 编写的 LLM provider 适配层：把多家 provider（OpenAI Chat Completions、DeepSeek、以及任何 OpenAI 兼容的 endpoint）的 wire 格式归一化到统一的 canonical 类型系统，原生支持流式、tool calling，并为 provider 特有功能保留独立的扩展通道。
+一个 Rust 编写的 LLM provider 适配层：把多家 provider（OpenAI Chat Completions、Anthropic Messages、DeepSeek、以及任何 OpenAI 兼容的 endpoint）的 wire 格式归一化到统一的 canonical 类型系统，原生支持流式、tool calling，并为 provider 特有功能保留独立的扩展通道。
 
 **状态：** 预发布版本（v0.1.0）。在 v1.0 之前，公开 API 可能变动。
 
@@ -34,7 +34,7 @@
 |---|---|---|---|---|---|
 | OpenAI Chat Completions | ✅ | `OpenAIExt`：seed、penalties、`reasoning_effort`、`extra_body` | ✅ | ✅ | `reasoning_effort`（o 系列 / GPT-5） |
 | DeepSeek（`api.deepseek.com`） | ✅（工厂函数 `deepseek::client`） | `OpenAIExt`（如 `extra_body: {"thinking": {"type": "disabled"}}`） | ✅ | ✅ | `reasoning_content` 解析为 `ResponseContent::Reasoning` |
-| Anthropic Messages | 规划中 | | | | |
+| Anthropic Messages | ✅ | `AnthropicExt`：top_k、thinking、metadata、cache_hints | ✅ | ✅ | Extended Thinking（thinking 块 → `ResponseContent::Reasoning`） |
 | 任意 OpenAI 兼容网关 | ✅，通过 `base_url` + `chat_path` 覆盖 | `extra_body` 注入非标字段 | ✅ | ✅ | 取决于 endpoint |
 
 已经验证可通过路径覆盖支持的网关：GitHub Models（路径为 `/chat/completions`，无 `/v1`）、OpenRouter（路径为 `/api/v1/...`）、Groq（路径为 `/openai/v1/...`）。库本身不为这些网关做任何特殊处理，它们能工作纯粹是因为协议就是 OpenAI Chat Completions。
@@ -101,8 +101,12 @@ if let Some(reasoning) = resp.reasoning() {
 ### 运行时切换 provider
 
 ```rust
+use llm_adapter::{anthropic::AnthropicProvider, deepseek, openai::OpenAIProvider, types::*, Provider};
+
 let provider: Box<dyn Provider> = if use_deepseek {
     Box::new(deepseek::client(deepseek_key))
+} else if use_anthropic {
+    Box::new(AnthropicProvider::builder(anthropic_key).build())
 } else {
     Box::new(OpenAIProvider::builder(openai_key).build())
 };
@@ -204,6 +208,23 @@ let resp = openai_provider.chat_native(&oai_req).await?;
 let stream = openai_provider.chat_stream_native(&oai_req).await?;
 ```
 
+Anthropic native 路径同理：
+
+```rust
+use llm_adapter::anthropic::{AnthropicExt, AnthropicMetadata, AnthropicRequest, ThinkingConfig};
+
+let ext = AnthropicExt::builder()
+    .top_k(40)
+    .thinking(ThinkingConfig { budget_tokens: 2000 })
+    .metadata(AnthropicMetadata { user_id: Some("my-user".into()) })
+    .disable_parallel_tool_use()
+    .build();
+
+let anth_req = AnthropicRequest { base: chat_req, ext };
+let resp = anthropic_provider.chat_native(&anth_req).await?;
+let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
+```
+
 ## 核心概念
 
 ### Canonical 类型
@@ -231,11 +252,11 @@ pub enum StopReason      { EndTurn, MaxTokens, StopSequence, ToolUse, ContentFil
 
 ### Universal 路径 vs Native 路径
 
-|  | `Provider::chat`（universal） | `OpenAIProvider::chat_native`（native） |
+|  | `Provider::chat`（universal） | `chat_native`（native） |
 |---|---|---|
-| 请求类型 | `&ChatRequest` | `&OpenAIRequest = { base: ChatRequest, ext: OpenAIExt }` |
+| 请求类型 | `&ChatRequest` | `&OpenAIRequest` / `&AnthropicRequest = { base: ChatRequest, ext }` |
 | Object-safe（`Box<dyn>`） | ✅ | ❌（具体 provider 类型） |
-| Provider 特有字段 | ❌ | ✅ seed、penalties、reasoning_effort、extra_body |
+| Provider 特有字段 | ❌ | ✅ seed、penalties、top_k、thinking、cache_hints、extra_body |
 | 适用场景 | 运行时可插拔 provider | 需要 provider 特有功能 |
 
 ### StreamHandle
@@ -296,7 +317,7 @@ OpenAIProvider::builder(key)
 ./test.sh              # 等价于 cargo test
 ```
 
-运行约 29 个单元和离线集成测试，无需网络也无需 API key。fixture 文件位于 `tests/fixtures/{openai,deepseek}/`，由真实 API 录制，因此 wire 层的细节（`system_fingerprint`、`completion_tokens_details.reasoning_tokens`、SSE chunk 边界等）都符合生产行为。
+运行约 75 个单元和离线集成测试，无需网络也无需 API key。fixture 文件位于 `tests/fixtures/{openai,deepseek,anthropic}/`，由真实 API 录制，因此 wire 层的细节（`system_fingerprint`、`completion_tokens_details.reasoning_tokens`、SSE chunk 边界等）都符合生产行为。
 
 `test.sh` 会在调用 cargo test 前设 `NO_PROXY=127.0.0.1,localhost`，避免 macOS 系统 HTTP 代理拦截 wiremock 的本地服务。
 
@@ -321,6 +342,12 @@ export DEEPSEEK_API_KEY=...
 export DEEPSEEK_BASE_URL=https://api.deepseek.com     # 默认值
 export DEEPSEEK_MODEL=deepseek-v4-flash               # 默认值
 export DEEPSEEK_REASONING_MODEL=deepseek-v4-flash     # 可选
+
+# Anthropic（也可以指向 DeepSeek 的 /anthropic 入口）
+export ANTHROPIC_API_KEY=...
+export ANTHROPIC_BASE_URL=https://api.anthropic.com    # 默认值
+export ANTHROPIC_MESSAGES_PATH=/v1/messages            # 默认值
+export ANTHROPIC_MODEL=claude-sonnet-4-6-20250514      # 默认值
 ```
 
 未设 `*_API_KEY` 的 provider，其集成测试会静默跳过（不报错）。其中一个测试专门验证 `extra_body + tool_choice: Required` 组合在真实 DeepSeek 上能跑通，证明 provider 特有扩展通道实际可用。
@@ -349,6 +376,11 @@ src/
 │  ├─ schema.rs          # OpenAI wire 类型（pub(crate)）
 │  ├─ convert.rs         # ChatRequest <-> OAI 转换，OpenAIExt builder
 │  └─ stream.rs          # SSE 解析器、OaiStreamState
+├─ anthropic/
+│  ├─ mod.rs             # AnthropicProvider + builder
+│  ├─ schema.rs          # Anthropic wire 类型（pub(crate)）
+│  ├─ convert.rs         # ChatRequest <-> Anthropic 转换，AnthropicExt builder
+│  └─ stream.rs          # Anthropic SSE 解析器、AnthropicStreamState
 └─ deepseek.rs           # 工厂函数，返回预配置好的 OpenAIProvider
 
 tests/
@@ -356,6 +388,7 @@ tests/
 ├─ common/mod.rs         # wiremock helper + .env 加载器
 ├─ openai_*.rs           # 离线测试
 ├─ deepseek_*.rs         # 离线测试
+├─ anthropic_*.rs        # 离线测试
 └─ integration_*.rs      # 可选的真实 API 测试
 
 examples/
@@ -364,10 +397,9 @@ examples/
 
 ## 已知限制
 
-- **Anthropic** 尚未实现（计划在后续实施计划中加入）。
 - **Azure OpenAI** 不支持（认证 header 不同 + 基于 deployment 的路径）。
 - **OpenAI Responses API** 不支持；仅 Chat Completions。
-- **Prompt caching**：可以从 `Usage.cached_input_tokens` 读到命中情况，但 canonical 层暂不提供主动触发（Anthropic 风格的 `cache_control` 标记会随 Anthropic provider 一起加入）。
+- **Prompt caching**：可以从 `Usage.cached_input_tokens` 读到命中情况，但 canonical 层暂不提供主动触发。可以通过 native 路径（`AnthropicExt.cache_hints`）添加 cache-control 标记。
 - **Retry / backoff** 未内建。请基于 `LlmError::RateLimit` / `LlmError::Overloaded` 中的 `retry_after` 在应用层处理。
 - **Structured Output**（`response_format: json_schema`）暂未在 canonical 层暴露。当前可通过 `OpenAIExt.extra_body` 传递。
 
