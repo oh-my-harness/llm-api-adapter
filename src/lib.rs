@@ -24,7 +24,7 @@ mod tests {
 
     #[test]
     fn content_construction() {
-        use types::{RequestContent, ResponseContent, ImageSource, ToolInvocation};
+        use types::{ImageSource, RequestContent, ResponseContent, ToolInvocation};
         let _text = RequestContent::Text("hello".into());
         let _img = RequestContent::Image(ImageSource::Url("https://example.com/img.png".into()));
         let _resp = ResponseContent::Text("world".into());
@@ -85,9 +85,15 @@ mod tests {
 
     #[test]
     fn stream_event_construction() {
-        use types::{StreamEvent, ContentKind, StopReason, Usage};
-        let _start = StreamEvent::ContentStart { index: 0, kind: ContentKind::Text };
-        let _delta = StreamEvent::TextDelta { index: 0, text: "hi".into() };
+        use types::{ContentKind, StopReason, StreamEvent, Usage};
+        let _start = StreamEvent::ContentStart {
+            index: 0,
+            kind: ContentKind::Text,
+        };
+        let _delta = StreamEvent::TextDelta {
+            index: 0,
+            text: "hi".into(),
+        };
         let _stop = StreamEvent::ContentStop { index: 0 };
         let _msg_stop = StreamEvent::MessageStop {
             stop_reason: StopReason::EndTurn,
@@ -109,7 +115,7 @@ mod tests {
 
     #[test]
     fn oai_response_deserializes() {
-        use openai::schema::{OaiResponse, OaiContent};
+        use openai::schema::{OaiContent, OaiResponse};
         let json = r#"{
             "id": "chatcmpl-1",
             "object": "chat.completion",
@@ -154,7 +160,10 @@ mod tests {
 
     #[test]
     fn convert_oai_response_to_canonical() {
-        use openai::{convert::from_oai, schema::{OaiResponse, OaiChoice, OaiMessage, OaiUsage}};
+        use openai::{
+            convert::from_oai,
+            schema::{OaiChoice, OaiMessage, OaiResponse, OaiUsage},
+        };
         use types::StopReason;
         let resp = OaiResponse {
             id: "chatcmpl-1".into(),
@@ -185,9 +194,9 @@ mod tests {
 
     #[test]
     fn oai_stream_parser_emits_events() {
+        use openai::schema::{OaiChunk, OaiDelta, OaiStreamChoice};
         use openai::stream::process_chunk;
-        use openai::schema::{OaiChunk, OaiStreamChoice, OaiDelta};
-        use types::{StreamEvent, ContentKind};
+        use types::{ContentKind, StreamEvent};
 
         let mut state = openai::stream::OaiStreamState::new();
 
@@ -195,7 +204,10 @@ mod tests {
             id: "c1".into(),
             model: "gpt-4o".into(),
             choices: vec![OaiStreamChoice {
-                delta: OaiDelta { content: Some("Hello".into()), ..Default::default() },
+                delta: OaiDelta {
+                    content: Some("Hello".into()),
+                    ..Default::default()
+                },
                 finish_reason: None,
             }],
             usage: None,
@@ -203,8 +215,17 @@ mod tests {
         let events = process_chunk(&mut state, chunk, false);
         // First content delta should emit ContentStart then TextDelta
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], Ok(StreamEvent::ContentStart { index: 0, kind: ContentKind::Text })));
-        assert!(matches!(&events[1], Ok(StreamEvent::TextDelta { index: 0, .. })));
+        assert!(matches!(
+            &events[0],
+            Ok(StreamEvent::ContentStart {
+                index: 0,
+                kind: ContentKind::Text
+            })
+        ));
+        assert!(matches!(
+            &events[1],
+            Ok(StreamEvent::TextDelta { index: 0, .. })
+        ));
     }
 
     #[test]

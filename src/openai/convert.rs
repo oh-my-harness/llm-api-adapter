@@ -1,13 +1,13 @@
+use crate::LlmError;
 use crate::types::{
     ChatRequest, ChatResponse, Message, RequestContent, ResponseContent, StopReason, ToolChoice,
     ToolInvocation, Usage,
 };
-use crate::LlmError;
 use serde::Serialize;
 
 use super::schema::{
-    OaiContent, OaiContentPart, OaiImageUrl, OaiMessage, OaiRequest, OaiResponse,
-    OaiTool, OaiToolCall, OaiToolCallFunction, OaiUsage, OaiFunction,
+    OaiContent, OaiContentPart, OaiFunction, OaiImageUrl, OaiMessage, OaiRequest, OaiResponse,
+    OaiTool, OaiToolCall, OaiToolCallFunction, OaiUsage,
 };
 
 // ── OpenAIExt ────────────────────────────────────────────────────────────────
@@ -153,7 +153,7 @@ pub struct OpenAIRequest {
 ///
 /// # Returns
 /// An OaiRequest ready to send to the OpenAI API, or an LlmError if conversion fails.
-pub fn to_oai(
+pub(crate) fn to_oai(
     req: &ChatRequest,
     ext: Option<&OpenAIExt>,
     stream: bool,
@@ -165,7 +165,7 @@ pub fn to_oai(
     let messages = req
         .messages()
         .iter()
-        .map(|m| message_to_oai(m))
+        .map(message_to_oai)
         .collect::<Result<Vec<_>, _>>()?;
 
     // Convert tools
@@ -234,7 +234,7 @@ fn message_to_oai(msg: &Message) -> Result<OaiMessage, LlmError> {
                     OaiContent::Parts(
                         content
                             .iter()
-                            .map(|c| req_content_to_part(c))
+                            .map(req_content_to_part)
                             .collect::<Result<Vec<_>, _>>()?,
                     )
                 }
@@ -242,7 +242,7 @@ fn message_to_oai(msg: &Message) -> Result<OaiMessage, LlmError> {
                 OaiContent::Parts(
                     content
                         .iter()
-                        .map(|c| req_content_to_part(c))
+                        .map(req_content_to_part)
                         .collect::<Result<Vec<_>, _>>()?,
                 )
             };
@@ -305,7 +305,7 @@ fn message_to_oai(msg: &Message) -> Result<OaiMessage, LlmError> {
                     OaiContent::Parts(
                         content
                             .iter()
-                            .map(|c| req_content_to_part(c))
+                            .map(req_content_to_part)
                             .collect::<Result<Vec<_>, _>>()?,
                     )
                 }
@@ -313,7 +313,7 @@ fn message_to_oai(msg: &Message) -> Result<OaiMessage, LlmError> {
                 OaiContent::Parts(
                     content
                         .iter()
-                        .map(|c| req_content_to_part(c))
+                        .map(req_content_to_part)
                         .collect::<Result<Vec<_>, _>>()?,
                 )
             };
@@ -373,7 +373,7 @@ fn tool_choice_to_oai(tc: &ToolChoice) -> serde_json::Value {
 ///
 /// # Returns
 /// A ChatResponse in canonical form, or an LlmError if conversion fails.
-pub fn from_oai(resp: OaiResponse, parse_reasoning: bool) -> Result<ChatResponse, LlmError> {
+pub(crate) fn from_oai(resp: OaiResponse, parse_reasoning: bool) -> Result<ChatResponse, LlmError> {
     if resp.choices.is_empty() {
         return Err(LlmError::InvalidRequest(
             "OaiResponse has no choices".into(),
@@ -384,10 +384,7 @@ pub fn from_oai(resp: OaiResponse, parse_reasoning: bool) -> Result<ChatResponse
     let choice = &resp.choices[0];
     let content = oai_message_to_content(choice.message.clone(), parse_reasoning)?;
     let stop_reason = parse_stop_reason(choice.finish_reason.as_deref());
-    let usage = oai_usage_to_canonical(
-        resp.usage.unwrap_or_default(),
-        parse_reasoning,
-    );
+    let usage = oai_usage_to_canonical(resp.usage.unwrap_or_default(), parse_reasoning);
 
     Ok(ChatResponse {
         id: resp.id,
@@ -406,10 +403,8 @@ fn oai_message_to_content(
     let mut content = Vec::new();
 
     // Add reasoning if present and enabled
-    if parse_reasoning {
-        if let Some(reasoning) = msg.reasoning_content {
-            content.push(ResponseContent::Reasoning(reasoning));
-        }
+    if parse_reasoning && let Some(reasoning) = msg.reasoning_content {
+        content.push(ResponseContent::Reasoning(reasoning));
     }
 
     // Add text content if present

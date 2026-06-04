@@ -1,11 +1,11 @@
+pub mod convert;
 pub(crate) mod schema;
 pub(crate) mod stream;
-pub mod convert;
 
 pub use convert::{OpenAIExt, OpenAIExtBuilder, OpenAIRequest};
 
-use async_trait::async_trait;
 use crate::{error::LlmError, provider::Provider, stream_handle::StreamHandle, types::*};
+use async_trait::async_trait;
 use std::time::Duration;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
@@ -54,7 +54,9 @@ impl OpenAIProvider {
         let url = format!("{}{}", self.base_url.trim_end_matches('/'), self.chat_path);
         let body = merge_extra_body(oai_req, extra_body)?;
 
-        let req = self.client.post(&url)
+        let req = self
+            .client
+            .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .body(body);
@@ -112,7 +114,9 @@ impl OpenAIProvider {
     /// type-safe canonical request shape.
     pub async fn chat_native(&self, req: &OpenAIRequest) -> Result<ChatResponse, LlmError> {
         let oai_req = convert::to_oai(&req.base, Some(&req.ext), false)?;
-        let response = self.send(&oai_req, req.ext.extra_body.as_ref(), false).await?;
+        let response = self
+            .send(&oai_req, req.ext.extra_body.as_ref(), false)
+            .await?;
         let oai_resp = response.json::<schema::OaiResponse>().await?;
         convert::from_oai(oai_resp, req.ext.parse_reasoning_content)
     }
@@ -120,7 +124,9 @@ impl OpenAIProvider {
     /// Chat completion using the native OpenAI path (streaming).
     pub async fn chat_stream_native(&self, req: &OpenAIRequest) -> Result<StreamHandle, LlmError> {
         let oai_req = convert::to_oai(&req.base, Some(&req.ext), true)?;
-        let response = self.send(&oai_req, req.ext.extra_body.as_ref(), true).await?;
+        let response = self
+            .send(&oai_req, req.ext.extra_body.as_ref(), true)
+            .await?;
         let model = oai_req.model.clone();
         let stream = stream::parse_stream(response, req.ext.parse_reasoning_content);
         Ok(StreamHandle::new(model, stream))
@@ -140,7 +146,9 @@ fn merge_extra_body(
         let extra_obj = extra.as_object().ok_or_else(|| {
             LlmError::InvalidRequest("OpenAIExt.extra_body must be a JSON object".into())
         })?;
-        let body_obj = body.as_object_mut().expect("OaiRequest serializes to object");
+        let body_obj = body
+            .as_object_mut()
+            .expect("OaiRequest serializes to object");
         for (k, v) in extra_obj {
             body_obj.insert(k.clone(), v.clone());
         }
@@ -212,4 +220,3 @@ impl Provider for OpenAIProvider {
         self.chat_stream_native(&oai_req).await
     }
 }
-

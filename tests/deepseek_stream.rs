@@ -1,10 +1,6 @@
 mod common;
 
-use llm_adapter::{
-    openai::OpenAIProvider,
-    types::*,
-    Provider,
-};
+use llm_adapter::{Provider, openai::OpenAIProvider, types::*};
 use wiremock::MockServer;
 
 fn provider(server: &MockServer) -> OpenAIProvider {
@@ -17,10 +13,16 @@ fn provider(server: &MockServer) -> OpenAIProvider {
 #[tokio::test]
 async fn deepseek_stream_reasoning_then_text() {
     let server = MockServer::start().await;
-    common::mock_stream(&server, include_str!("fixtures/deepseek/stream_reasoning.txt")).await;
+    common::mock_stream(
+        &server,
+        include_str!("fixtures/deepseek/stream_reasoning.txt"),
+    )
+    .await;
 
     let req = ChatRequest::builder("deepseek-v4-flash", 512)
-        .message(Message::User(vec![RequestContent::Text("What is the answer?".into())]))
+        .message(Message::User(vec![RequestContent::Text(
+            "What is the answer?".into(),
+        )]))
         .build();
 
     let handle = provider(&server).chat_stream(&req).await.unwrap();
@@ -30,7 +32,15 @@ async fn deepseek_stream_reasoning_then_text() {
     assert!(!resp.reasoning().unwrap().is_empty());
     assert!(!resp.text().is_empty());
     // Reasoning block has lower index than text block
-    let reasoning_idx = resp.content.iter().position(|c| matches!(c, ResponseContent::Reasoning(_))).unwrap();
-    let text_idx = resp.content.iter().position(|c| matches!(c, ResponseContent::Text(_))).unwrap();
+    let reasoning_idx = resp
+        .content
+        .iter()
+        .position(|c| matches!(c, ResponseContent::Reasoning(_)))
+        .unwrap();
+    let text_idx = resp
+        .content
+        .iter()
+        .position(|c| matches!(c, ResponseContent::Text(_)))
+        .unwrap();
     assert!(reasoning_idx < text_idx);
 }

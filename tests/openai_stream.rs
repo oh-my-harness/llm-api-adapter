@@ -1,11 +1,7 @@
 mod common;
 
-use llm_adapter::{
-    openai::OpenAIProvider,
-    types::*,
-    Provider,
-};
 use futures::StreamExt;
+use llm_adapter::{Provider, openai::OpenAIProvider, types::*};
 use wiremock::MockServer;
 
 fn provider(server: &MockServer) -> OpenAIProvider {
@@ -68,10 +64,16 @@ async fn stream_events_fire_in_order() {
 #[tokio::test]
 async fn stream_tool_call_collects_invocation() {
     let server = MockServer::start().await;
-    common::mock_stream(&server, include_str!("fixtures/openai/stream_tool_call.txt")).await;
+    common::mock_stream(
+        &server,
+        include_str!("fixtures/openai/stream_tool_call.txt"),
+    )
+    .await;
 
     let req = ChatRequest::builder("gpt-4o", 512)
-        .message(Message::User(vec![RequestContent::Text("Weather in Paris?".into())]))
+        .message(Message::User(vec![RequestContent::Text(
+            "Weather in Paris?".into(),
+        )]))
         .tool(ToolDef {
             name: "get_weather".into(),
             description: "Get weather".into(),

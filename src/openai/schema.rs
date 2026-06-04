@@ -205,6 +205,7 @@ pub(crate) struct OaiCompletionTokensDetails {
 
 /// A chunk in a streaming response.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // id/model are part of the wire schema; we read them via Value when needed.
 pub(crate) struct OaiChunk {
     /// Response ID.
     #[serde(default)]
@@ -278,6 +279,7 @@ pub(crate) struct OaiErrorResponse {
 
 /// Error body.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // message/type kept for future error-detail surfacing; only `code` is read today.
 pub(crate) struct OaiErrorBody {
     /// Error message.
     pub message: String,

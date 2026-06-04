@@ -1,6 +1,6 @@
-use crate::types::{ContentKind, StreamEvent, StopReason};
-use crate::LlmError;
 use super::schema::{OaiChunk, OaiDelta};
+use crate::LlmError;
+use crate::types::{ContentKind, StopReason, StreamEvent};
 use std::collections::HashMap;
 
 /// Tracks streaming state across chunks for a single message.
@@ -101,35 +101,33 @@ fn process_delta(
     let mut events = Vec::new();
 
     // Process reasoning_content if enabled and present
-    if parse_reasoning {
-        if let Some(ref reasoning) = delta.reasoning_content {
-            // If text_index is set, we need to close it first (reasoning comes before text in streaming)
-            if state.text_index.is_some() {
-                // This shouldn't happen in normal flow, but handle it
-                let text_idx = state.text_index.unwrap();
-                events.push(Ok(StreamEvent::ContentStop { index: text_idx }));
-                state.open_blocks.retain(|&x| x != text_idx);
-                state.text_index = None;
-            }
+    if parse_reasoning && let Some(ref reasoning) = delta.reasoning_content {
+        // If text_index is set, we need to close it first (reasoning comes before text in streaming)
+        if state.text_index.is_some() {
+            // This shouldn't happen in normal flow, but handle it
+            let text_idx = state.text_index.unwrap();
+            events.push(Ok(StreamEvent::ContentStop { index: text_idx }));
+            state.open_blocks.retain(|&x| x != text_idx);
+            state.text_index = None;
+        }
 
-            // Allocate reasoning block if needed
-            if state.reasoning_index.is_none() {
-                let idx = state.allocate_index();
-                state.reasoning_index = Some(idx);
-                state.open_blocks.push(idx);
-                events.push(Ok(StreamEvent::ContentStart {
-                    index: idx,
-                    kind: ContentKind::Reasoning,
-                }));
-            }
+        // Allocate reasoning block if needed
+        if state.reasoning_index.is_none() {
+            let idx = state.allocate_index();
+            state.reasoning_index = Some(idx);
+            state.open_blocks.push(idx);
+            events.push(Ok(StreamEvent::ContentStart {
+                index: idx,
+                kind: ContentKind::Reasoning,
+            }));
+        }
 
-            // Emit reasoning delta
-            if let Some(idx) = state.reasoning_index {
-                events.push(Ok(StreamEvent::ReasoningDelta {
-                    index: idx,
-                    text: reasoning.clone(),
-                }));
-            }
+        // Emit reasoning delta
+        if let Some(idx) = state.reasoning_index {
+            events.push(Ok(StreamEvent::ReasoningDelta {
+                index: idx,
+                text: reasoning.clone(),
+            }));
         }
     }
 
@@ -178,32 +176,31 @@ fn process_delta(
         };
 
         // If this is the first delta for this tool (has id and name), emit ContentStart
-        if let Some(ref id) = tool_call.id {
-            if let Some(ref func) = tool_call.function {
-                if let Some(ref name) = func.name {
-                    // Only emit ContentStart once per tool
-                    if !state.open_blocks.contains(&canonical_index) {
-                        state.open_blocks.push(canonical_index);
-                        events.push(Ok(StreamEvent::ContentStart {
-                            index: canonical_index,
-                            kind: ContentKind::ToolInvocation {
-                                id: id.clone(),
-                                name: name.clone(),
-                            },
-                        }));
-                    }
-                }
+        if let Some(ref id) = tool_call.id
+            && let Some(ref func) = tool_call.function
+            && let Some(ref name) = func.name
+        {
+            // Only emit ContentStart once per tool
+            if !state.open_blocks.contains(&canonical_index) {
+                state.open_blocks.push(canonical_index);
+                events.push(Ok(StreamEvent::ContentStart {
+                    index: canonical_index,
+                    kind: ContentKind::ToolInvocation {
+                        id: id.clone(),
+                        name: name.clone(),
+                    },
+                }));
             }
         }
 
         // Emit tool delta if arguments are present
-        if let Some(ref func) = tool_call.function {
-            if let Some(ref args) = func.arguments {
-                events.push(Ok(StreamEvent::ToolDelta {
-                    index: canonical_index,
-                    arguments: args.clone(),
-                }));
-            }
+        if let Some(ref func) = tool_call.function
+            && let Some(ref args) = func.arguments
+        {
+            events.push(Ok(StreamEvent::ToolDelta {
+                index: canonical_index,
+                arguments: args.clone(),
+            }));
         }
     }
 
@@ -238,15 +235,15 @@ pub fn parse_stream(
     response: reqwest::Response,
     parse_reasoning: bool,
 ) -> futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>> {
-    use futures::stream::StreamExt;
     use eventsource_stream::Eventsource;
+    use futures::stream::StreamExt;
 
     let stream = response.bytes_stream();
     let event_stream = stream.eventsource();
 
     let mut state = OaiStreamState::new();
 
-    let mapped = event_stream
+    (event_stream
         .flat_map(move |event_result| {
             let mut results = Vec::new();
 
@@ -276,7 +273,5 @@ pub fn parse_stream(
 
             futures::stream::iter(results).boxed()
         })
-        .boxed();
-
-    mapped
+        .boxed()) as _
 }

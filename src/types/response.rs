@@ -55,22 +55,37 @@ impl ChatResponse {
 
     /// Concatenate all `Text` blocks in order.
     pub fn text(&self) -> String {
-        self.content.iter()
-            .filter_map(|c| if let ResponseContent::Text(t) = c { Some(t.as_str()) } else { None })
+        self.content
+            .iter()
+            .filter_map(|c| {
+                if let ResponseContent::Text(t) = c {
+                    Some(t.as_str())
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
     /// Iterate over all `ToolInvocation` blocks.
     pub fn tool_invocations(&self) -> impl Iterator<Item = &ToolInvocation> {
         self.content.iter().filter_map(|c| {
-            if let ResponseContent::ToolInvocation(ti) = c { Some(ti) } else { None }
+            if let ResponseContent::ToolInvocation(ti) = c {
+                Some(ti)
+            } else {
+                None
+            }
         })
     }
 
     /// Return the first reasoning block text, if any.
     pub fn reasoning(&self) -> Option<&str> {
         self.content.iter().find_map(|c| {
-            if let ResponseContent::Reasoning(r) = c { Some(r.as_str()) } else { None }
+            if let ResponseContent::Reasoning(r) = c {
+                Some(r.as_str())
+            } else {
+                None
+            }
         })
     }
 }

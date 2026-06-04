@@ -1,10 +1,6 @@
 mod common;
 
-use llm_adapter::{
-    openai::OpenAIProvider,
-    types::*,
-    LlmError, Provider,
-};
+use llm_adapter::{LlmError, Provider, openai::OpenAIProvider, types::*};
 use wiremock::MockServer;
 
 fn provider(server: &MockServer) -> OpenAIProvider {
@@ -45,7 +41,9 @@ async fn chat_returns_tool_call() {
         input_schema: serde_json::json!({"type":"object","properties":{"location":{"type":"string"}}}),
     };
     let req = ChatRequest::builder("gpt-4o", 512)
-        .message(Message::User(vec![RequestContent::Text("What's the weather in Paris?".into())]))
+        .message(Message::User(vec![RequestContent::Text(
+            "What's the weather in Paris?".into(),
+        )]))
         .tool(tool)
         .build();
 
@@ -66,28 +64,28 @@ async fn multi_turn_tool_call() {
     // First call returns tool call, second returns final answer
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/v1/chat/completions"))
-        .respond_with(
-            wiremock::ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/openai/chat_tool_call.json"), "application/json"),
-        )
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/openai/chat_tool_call.json"),
+            "application/json",
+        ))
         .up_to_n_times(1)
         .mount(&server)
         .await;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/v1/chat/completions"))
-        .respond_with(
-            wiremock::ResponseTemplate::new(200)
-                .set_body_raw(include_str!("fixtures/openai/chat_after_tool.json"), "application/json"),
-        )
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/openai/chat_after_tool.json"),
+            "application/json",
+        ))
         .mount(&server)
         .await;
 
     let p = provider(&server);
 
     // Round 1: get tool call
-    let mut messages = vec![
-        Message::User(vec![RequestContent::Text("What's the weather in Paris?".into())]),
-    ];
+    let mut messages = vec![Message::User(vec![RequestContent::Text(
+        "What's the weather in Paris?".into(),
+    )])];
     let req1 = ChatRequest::builder("gpt-4o", 512)
         .messages(messages.clone())
         .tool(ToolDef {
@@ -108,7 +106,9 @@ async fn multi_turn_tool_call() {
     });
 
     // Round 2: final answer
-    let req2 = ChatRequest::builder("gpt-4o", 512).messages(messages).build();
+    let req2 = ChatRequest::builder("gpt-4o", 512)
+        .messages(messages)
+        .build();
     let resp2 = p.chat(&req2).await.unwrap();
     assert!(matches!(resp2.stop_reason, StopReason::EndTurn));
     assert!(!resp2.text().is_empty());
@@ -117,7 +117,12 @@ async fn multi_turn_tool_call() {
 #[tokio::test]
 async fn error_401_maps_to_unauthorized() {
     let server = MockServer::start().await;
-    common::mock_error(&server, 401, include_str!("fixtures/openai/error_unauthorized.json")).await;
+    common::mock_error(
+        &server,
+        401,
+        include_str!("fixtures/openai/error_unauthorized.json"),
+    )
+    .await;
 
     let req = ChatRequest::builder("gpt-4o", 512)
         .message(Message::User(vec![RequestContent::Text("Hi".into())]))
@@ -135,7 +140,10 @@ async fn error_429_maps_to_rate_limit() {
         .respond_with(
             wiremock::ResponseTemplate::new(429)
                 .insert_header("retry-after", "60")
-                .set_body_raw(include_str!("fixtures/openai/error_rate_limit.json"), "application/json"),
+                .set_body_raw(
+                    include_str!("fixtures/openai/error_rate_limit.json"),
+                    "application/json",
+                ),
         )
         .mount(&server)
         .await;
@@ -151,7 +159,12 @@ async fn error_429_maps_to_rate_limit() {
 #[tokio::test]
 async fn error_500_maps_to_server_error() {
     let server = MockServer::start().await;
-    common::mock_error(&server, 500, include_str!("fixtures/openai/error_server.json")).await;
+    common::mock_error(
+        &server,
+        500,
+        include_str!("fixtures/openai/error_server.json"),
+    )
+    .await;
 
     let req = ChatRequest::builder("gpt-4o", 512)
         .message(Message::User(vec![RequestContent::Text("Hi".into())]))
@@ -167,12 +180,10 @@ async fn custom_chat_path_for_compatible_gateways() {
     let server = MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("POST"))
         .and(wiremock::matchers::path("/chat/completions"))
-        .respond_with(
-            wiremock::ResponseTemplate::new(200).set_body_raw(
-                include_str!("fixtures/openai/chat_simple.json"),
-                "application/json",
-            ),
-        )
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/openai/chat_simple.json"),
+            "application/json",
+        ))
         .mount(&server)
         .await;
 
@@ -204,13 +215,21 @@ async fn reasoning_tokens_populated_from_completion_details() {
         .build();
 
     let req = ChatRequest::builder("gpt-4o", 1024)
-        .message(Message::User(vec![RequestContent::Text("What is 7 times 8?".into())]))
+        .message(Message::User(vec![RequestContent::Text(
+            "What is 7 times 8?".into(),
+        )]))
         .build();
 
     let resp = p.chat(&req).await.unwrap();
 
-    assert!(resp.usage.reasoning_tokens > 0, "reasoning_tokens should be parsed from completion_tokens_details");
-    assert!(resp.reasoning().is_some(), "reasoning content should be parsed when parse_reasoning_content is enabled");
+    assert!(
+        resp.usage.reasoning_tokens > 0,
+        "reasoning_tokens should be parsed from completion_tokens_details"
+    );
+    assert!(
+        resp.reasoning().is_some(),
+        "reasoning content should be parsed when parse_reasoning_content is enabled"
+    );
     assert!(!resp.text().is_empty());
 }
 
@@ -227,12 +246,10 @@ async fn extra_body_is_merged_into_request() {
             "thinking": {"type": "disabled"},
             "custom_flag": true
         })))
-        .respond_with(
-            wiremock::ResponseTemplate::new(200).set_body_raw(
-                include_str!("fixtures/openai/chat_simple.json"),
-                "application/json",
-            ),
-        )
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/openai/chat_simple.json"),
+            "application/json",
+        ))
         .mount(&server)
         .await;
 
@@ -282,6 +299,7 @@ async fn extra_body_rejects_non_object() {
     let err = p.chat_native(&req).await.unwrap_err();
     assert!(
         matches!(err, LlmError::InvalidRequest(ref m) if m.contains("extra_body")),
-        "expected InvalidRequest about extra_body, got: {:?}", err
+        "expected InvalidRequest about extra_body, got: {:?}",
+        err
     );
 }

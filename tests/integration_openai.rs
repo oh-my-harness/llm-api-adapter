@@ -16,11 +16,7 @@
 mod common;
 
 use futures::StreamExt;
-use llm_adapter::{
-    openai::OpenAIProvider,
-    types::*,
-    Provider,
-};
+use llm_adapter::{Provider, openai::OpenAIProvider, types::*};
 
 /// Returns `None` when the test should be skipped.
 fn provider() -> Option<(OpenAIProvider, String)> {
@@ -32,12 +28,11 @@ fn provider() -> Option<(OpenAIProvider, String)> {
             return None;
         }
     };
-    let base_url = common::opt_env("OPENAI_BASE_URL")
-        .unwrap_or_else(|| "https://api.openai.com".into());
-    let chat_path = common::opt_env("OPENAI_CHAT_PATH")
-        .unwrap_or_else(|| "/v1/chat/completions".into());
-    let model = common::opt_env("OPENAI_MODEL")
-        .unwrap_or_else(|| "gpt-4o-mini".into());
+    let base_url =
+        common::opt_env("OPENAI_BASE_URL").unwrap_or_else(|| "https://api.openai.com".into());
+    let chat_path =
+        common::opt_env("OPENAI_CHAT_PATH").unwrap_or_else(|| "/v1/chat/completions".into());
+    let model = common::opt_env("OPENAI_MODEL").unwrap_or_else(|| "gpt-4o-mini".into());
 
     let p = OpenAIProvider::builder(api_key)
         .base_url(base_url)
@@ -48,7 +43,9 @@ fn provider() -> Option<(OpenAIProvider, String)> {
 
 #[tokio::test]
 async fn integration_simple_chat() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
     let req = ChatRequest::builder(model, 1024)
         .message(Message::User(vec![RequestContent::Text(
             "Say hi in exactly five words.".into(),
@@ -57,14 +54,19 @@ async fn integration_simple_chat() {
 
     let resp = p.chat(&req).await.expect("chat failed");
     assert!(!resp.text().is_empty(), "expected non-empty text");
-    assert!(matches!(resp.stop_reason, StopReason::EndTurn | StopReason::MaxTokens));
+    assert!(matches!(
+        resp.stop_reason,
+        StopReason::EndTurn | StopReason::MaxTokens
+    ));
     assert!(resp.usage.input_tokens > 0);
     assert!(resp.usage.output_tokens > 0);
 }
 
 #[tokio::test]
 async fn integration_multi_turn() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
 
     let req1 = ChatRequest::builder(&model, 1024)
         .message(Message::System("Respond in one short sentence.".into()))
@@ -105,7 +107,9 @@ fn weather_tool() -> ToolDef {
 
 #[tokio::test]
 async fn integration_tool_call_single_turn() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
     // Use Auto + an imperative prompt: tool_choice = Required is rejected
     // by some compatible providers when their model has thinking mode on
     // (e.g. DeepSeek V4).
@@ -117,19 +121,27 @@ async fn integration_tool_call_single_turn() {
         .build();
 
     let resp = p.chat(&req).await.expect("tool call failed");
-    assert!(matches!(resp.stop_reason, StopReason::ToolUse),
+    assert!(
+        matches!(resp.stop_reason, StopReason::ToolUse),
         "expected tool_use stop reason; got: {:?}, text: {:?}",
-        resp.stop_reason, resp.text());
+        resp.stop_reason,
+        resp.text()
+    );
     let invocations: Vec<_> = resp.tool_invocations().collect();
     assert_eq!(invocations.len(), 1);
     assert_eq!(invocations[0].name, "get_weather");
-    assert!(invocations[0].input.get("location").is_some(),
-            "expected `location` in tool arguments, got: {}", invocations[0].input);
+    assert!(
+        invocations[0].input.get("location").is_some(),
+        "expected `location` in tool arguments, got: {}",
+        invocations[0].input
+    );
 }
 
 #[tokio::test]
 async fn integration_tool_call_round_trip() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
 
     // Round 1: ask for a tool call.
     let req1 = ChatRequest::builder(&model, 1024)
@@ -139,8 +151,11 @@ async fn integration_tool_call_round_trip() {
         .tool(weather_tool())
         .build();
     let resp1 = p.chat(&req1).await.expect("round 1 failed");
-    let invocation = resp1.tool_invocations().next()
-        .expect("expected at least one tool invocation").clone();
+    let invocation = resp1
+        .tool_invocations()
+        .next()
+        .expect("expected at least one tool invocation")
+        .clone();
 
     // Round 2: feed back a fake tool result and let the model answer.
     let mut messages = req1.messages().to_vec();
@@ -162,7 +177,9 @@ async fn integration_tool_call_round_trip() {
 
 #[tokio::test]
 async fn integration_stream_simple() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
     let req = ChatRequest::builder(model, 1024)
         .message(Message::User(vec![RequestContent::Text(
             "Count from one to five.".into(),
@@ -192,7 +209,9 @@ async fn integration_stream_simple() {
 
 #[tokio::test]
 async fn integration_stream_tool_call() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
     let req = ChatRequest::builder(model, 1024)
         .message(Message::User(vec![RequestContent::Text(
             "You have a get_weather tool. Call it to find the weather in Paris.".into(),
