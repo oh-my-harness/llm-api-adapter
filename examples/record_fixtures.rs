@@ -104,7 +104,11 @@ async fn record_openai(client: &reqwest::Client, cfg: &ProviderConfig) {
 
     let dir = fixtures_dir("openai");
     let is_deepseek = cfg.kind == ProviderKind::DeepSeek;
-    let tok_field = if is_deepseek { "max_tokens" } else { "max_completion_tokens" };
+    let tok_field = if is_deepseek {
+        "max_tokens"
+    } else {
+        "max_completion_tokens"
+    };
 
     // chat_simple: explicitly suppress reasoning on DeepSeek-style endpoints
     // (DeepSeek V4 enables thinking by default; real OpenAI ignores this field).
@@ -114,7 +118,9 @@ async fn record_openai(client: &reqwest::Client, cfg: &ProviderConfig) {
         "max_tokens": 256,
     });
     if is_deepseek {
-        simple_body.as_object_mut().unwrap()
+        simple_body
+            .as_object_mut()
+            .unwrap()
             .insert("thinking".into(), json!({"type": "disabled"}));
     }
     run_chat(client, cfg, &dir, "chat_simple.json", simple_body).await;
@@ -140,10 +146,19 @@ async fn record_openai(client: &reqwest::Client, cfg: &ProviderConfig) {
         "max_tokens": 256,
     });
     if is_deepseek {
-        tool_call_body.as_object_mut().unwrap()
+        tool_call_body
+            .as_object_mut()
+            .unwrap()
             .insert("thinking".into(), json!({"type": "disabled"}));
     }
-    run_chat(client, cfg, &dir, "chat_tool_call.json", tool_call_body.clone()).await;
+    run_chat(
+        client,
+        cfg,
+        &dir,
+        "chat_tool_call.json",
+        tool_call_body.clone(),
+    )
+    .await;
 
     // chat_after_tool: replay the recorded tool_call so the follow-up assumes
     // the same call_id / arguments. We craft this manually rather than reading
@@ -167,7 +182,9 @@ async fn record_openai(client: &reqwest::Client, cfg: &ProviderConfig) {
         "max_tokens": 256,
     });
     if is_deepseek {
-        after_tool_body.as_object_mut().unwrap()
+        after_tool_body
+            .as_object_mut()
+            .unwrap()
             .insert("thinking".into(), json!({"type": "disabled"}));
     }
     run_chat(client, cfg, &dir, "chat_after_tool.json", after_tool_body).await;
@@ -181,16 +198,22 @@ async fn record_openai(client: &reqwest::Client, cfg: &ProviderConfig) {
         "stream_options": {"include_usage": true},
     });
     if is_deepseek {
-        simple_stream.as_object_mut().unwrap()
+        simple_stream
+            .as_object_mut()
+            .unwrap()
             .insert("thinking".into(), json!({"type": "disabled"}));
     }
     run_stream(client, cfg, &dir, "stream_simple.txt", simple_stream).await;
 
     // stream_tool_call
     run_stream(
-        client, cfg, &dir, "stream_tool_call.txt",
+        client,
+        cfg,
+        &dir,
+        "stream_tool_call.txt",
         tool_call_body_with_stream(&tool_call_body),
-    ).await;
+    )
+    .await;
 
     // Reasoning scenarios
     if let Some(rm) = cfg.reasoning_model.as_deref() {
@@ -203,7 +226,9 @@ async fn record_openai(client: &reqwest::Client, cfg: &ProviderConfig) {
             tok_field: 2048,
         });
         if !is_deepseek {
-            chat_body.as_object_mut().unwrap()
+            chat_body
+                .as_object_mut()
+                .unwrap()
                 .insert("reasoning_effort".into(), json!("low"));
         }
         run_chat(client, cfg, &dir, "chat_reasoning.json", chat_body.clone()).await;
@@ -239,14 +264,18 @@ async fn record_deepseek(client: &reqwest::Client, cfg: &ProviderConfig) {
     // chat_simple: explicitly disable thinking mode (DeepSeek V4 enables it
     // by default; we want a baseline "no reasoning_content" fixture).
     run_chat(
-        client, cfg, &dir, "chat_simple.json",
+        client,
+        cfg,
+        &dir,
+        "chat_simple.json",
         json!({
             "model": model,
             "messages": [{"role": "user", "content": "Say hi in exactly five words."}],
             "max_tokens": 256,
             "thinking": {"type": "disabled"},
         }),
-    ).await;
+    )
+    .await;
 
     if let Some(rm) = cfg.reasoning_model.as_deref() {
         // Thinking mode: DeepSeek V4 enables it via top-level "thinking" field
@@ -259,7 +288,9 @@ async fn record_deepseek(client: &reqwest::Client, cfg: &ProviderConfig) {
             "max_tokens": 4096,
         });
         if !is_legacy {
-            chat_body.as_object_mut().unwrap()
+            chat_body
+                .as_object_mut()
+                .unwrap()
                 .insert("thinking".into(), json!({"type": "enabled"}));
         }
         run_chat(client, cfg, &dir, "chat_reasoning.json", chat_body.clone()).await;
@@ -296,12 +327,18 @@ async fn run_chat(
         .await
     {
         Ok(r) => r,
-        Err(e) => { println!("FAIL (send): {e}"); return; }
+        Err(e) => {
+            println!("FAIL (send): {e}");
+            return;
+        }
     };
     let status = resp.status();
     let text = match resp.text().await {
         Ok(t) => t,
-        Err(e) => { println!("FAIL (read): {e}"); return; }
+        Err(e) => {
+            println!("FAIL (read): {e}");
+            return;
+        }
     };
     if !status.is_success() {
         println!("HTTP {} — body: {}", status, text);
@@ -334,7 +371,10 @@ async fn run_stream(
         .await
     {
         Ok(r) => r,
-        Err(e) => { println!("FAIL (send): {e}"); return; }
+        Err(e) => {
+            println!("FAIL (send): {e}");
+            return;
+        }
     };
     let status = resp.status();
     if !status.is_success() {
@@ -348,7 +388,10 @@ async fn run_stream(
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(b) => buf.extend_from_slice(&b),
-            Err(e) => { println!("FAIL (stream): {e}"); return; }
+            Err(e) => {
+                println!("FAIL (stream): {e}");
+                return;
+            }
         }
     }
     if let Err(e) = std::fs::write(&path, &buf) {
@@ -361,16 +404,24 @@ async fn run_stream(
 // ── env / fs helpers ─────────────────────────────────────────────────────────
 
 fn load_dotenv(path: &str) {
-    let Ok(content) = std::fs::read_to_string(path) else { return; };
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return;
+    };
     for raw in content.lines() {
         let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((k, v)) = line.split_once('=') else { continue; };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         let key = k.trim();
         let val = v.trim().trim_matches('"').trim_matches('\'');
         if !val.is_empty() && std::env::var_os(key).is_none() {
-            unsafe { std::env::set_var(key, val); }
+            unsafe {
+                std::env::set_var(key, val);
+            }
         }
     }
 }

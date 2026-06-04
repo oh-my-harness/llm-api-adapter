@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use crate::{error::LlmError, stream_handle::StreamHandle, types::*};
+use async_trait::async_trait;
 
 /// Unified interface for any LLM provider.
 ///

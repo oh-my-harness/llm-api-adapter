@@ -30,5 +30,8 @@ pub enum StreamEvent {
     /// A content block has finished.
     ContentStop { index: usize },
     /// The full message has finished; carries final usage.
-    MessageStop { stop_reason: StopReason, usage: Usage },
+    MessageStop {
+        stop_reason: StopReason,
+        usage: Usage,
+    },
 }

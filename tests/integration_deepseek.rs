@@ -15,12 +15,7 @@
 mod common;
 
 use futures::StreamExt;
-use llm_adapter::{
-    deepseek,
-    openai::OpenAIProvider,
-    types::*,
-    Provider,
-};
+use llm_adapter::{Provider, deepseek, openai::OpenAIProvider, types::*};
 
 /// Build a DeepSeek-configured provider honouring optional base_url override.
 /// Returns `None` when the test should be skipped.
@@ -33,8 +28,7 @@ fn provider() -> Option<(OpenAIProvider, String)> {
             return None;
         }
     };
-    let model = common::opt_env("DEEPSEEK_MODEL")
-        .unwrap_or_else(|| "deepseek-v4-flash".into());
+    let model = common::opt_env("DEEPSEEK_MODEL").unwrap_or_else(|| "deepseek-v4-flash".into());
 
     let p = if let Some(base) = common::opt_env("DEEPSEEK_BASE_URL") {
         // Custom endpoint: rebuild via OpenAIProvider builder with same flags
@@ -56,7 +50,9 @@ fn reasoning_model() -> Option<String> {
 
 #[tokio::test]
 async fn integration_simple_chat() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
     // Note: DeepSeek V4 enables thinking by default — we don't disable it here
     // because the canonical ChatRequest doesn't expose thinking control. The
     // response may still include reasoning_content, which parse_reasoning_content
@@ -69,14 +65,19 @@ async fn integration_simple_chat() {
 
     let resp = p.chat(&req).await.expect("chat failed");
     assert!(!resp.text().is_empty(), "expected non-empty text");
-    assert!(matches!(resp.stop_reason, StopReason::EndTurn | StopReason::MaxTokens));
+    assert!(matches!(
+        resp.stop_reason,
+        StopReason::EndTurn | StopReason::MaxTokens
+    ));
     assert!(resp.usage.input_tokens > 0);
     assert!(resp.usage.output_tokens > 0);
 }
 
 #[tokio::test]
 async fn integration_multi_turn() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
 
     let req1 = ChatRequest::builder(&model, 1024)
         .message(Message::System("Respond in one short sentence.".into()))
@@ -116,7 +117,9 @@ fn weather_tool() -> ToolDef {
 
 #[tokio::test]
 async fn integration_tool_call_single_turn() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
     // NOTE: DeepSeek V4 enables thinking by default, and thinking mode does
     // not accept tool_choice = Required/Specific. We rely on Auto + an
     // imperative prompt to elicit a tool call.
@@ -128,9 +131,12 @@ async fn integration_tool_call_single_turn() {
         .build();
 
     let resp = p.chat(&req).await.expect("tool call failed");
-    assert!(matches!(resp.stop_reason, StopReason::ToolUse),
+    assert!(
+        matches!(resp.stop_reason, StopReason::ToolUse),
         "expected tool_use stop reason; got: {:?}, text: {:?}",
-        resp.stop_reason, resp.text());
+        resp.stop_reason,
+        resp.text()
+    );
     let invocations: Vec<_> = resp.tool_invocations().collect();
     assert_eq!(invocations.len(), 1);
     assert_eq!(invocations[0].name, "get_weather");
@@ -139,7 +145,9 @@ async fn integration_tool_call_single_turn() {
 
 #[tokio::test]
 async fn integration_tool_call_round_trip() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
 
     let req1 = ChatRequest::builder(&model, 1024)
         .message(Message::User(vec![RequestContent::Text(
@@ -148,8 +156,11 @@ async fn integration_tool_call_round_trip() {
         .tool(weather_tool())
         .build();
     let resp1 = p.chat(&req1).await.expect("round 1 failed");
-    let invocation = resp1.tool_invocations().next()
-        .expect("expected at least one tool invocation").clone();
+    let invocation = resp1
+        .tool_invocations()
+        .next()
+        .expect("expected at least one tool invocation")
+        .clone();
 
     let mut messages = req1.messages().to_vec();
     messages.push(resp1.into_message());
@@ -170,7 +181,9 @@ async fn integration_tool_call_round_trip() {
 
 #[tokio::test]
 async fn integration_stream_simple() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
     let req = ChatRequest::builder(model, 1024)
         .message(Message::User(vec![RequestContent::Text(
             "Count from one to five.".into(),
@@ -197,7 +210,9 @@ async fn integration_stream_simple() {
 
 #[tokio::test]
 async fn integration_stream_tool_call() {
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
     let req = ChatRequest::builder(model, 1024)
         .message(Message::User(vec![RequestContent::Text(
             "You have a get_weather tool. Call it to find the weather in Paris.".into(),
@@ -215,7 +230,9 @@ async fn integration_stream_tool_call() {
 
 #[tokio::test]
 async fn integration_reasoning_chat() {
-    let Some((p, _)) = provider() else { return; };
+    let Some((p, _)) = provider() else {
+        return;
+    };
     let Some(rm) = reasoning_model() else {
         println!("[skip] DEEPSEEK_REASONING_MODEL not set");
         return;
@@ -232,15 +249,21 @@ async fn integration_reasoning_chat() {
     // Thinking mode emits reasoning_content; with the deepseek::client
     // factory (parse_reasoning_content = true), it surfaces as a Reasoning
     // block plus a non-zero reasoning_tokens count.
-    assert!(resp.reasoning().is_some(),
-        "expected reasoning content from thinking model");
-    assert!(resp.usage.reasoning_tokens > 0,
-        "expected reasoning_tokens > 0 from thinking model");
+    assert!(
+        resp.reasoning().is_some(),
+        "expected reasoning content from thinking model"
+    );
+    assert!(
+        resp.usage.reasoning_tokens > 0,
+        "expected reasoning_tokens > 0 from thinking model"
+    );
 }
 
 #[tokio::test]
 async fn integration_reasoning_stream() {
-    let Some((p, _)) = provider() else { return; };
+    let Some((p, _)) = provider() else {
+        return;
+    };
     let Some(rm) = reasoning_model() else {
         println!("[skip] DEEPSEEK_REASONING_MODEL not set");
         return;
@@ -254,14 +277,20 @@ async fn integration_reasoning_stream() {
 
     let handle = p.chat_stream(&req).await.expect("stream failed");
     let resp = handle.collect().await.expect("collect failed");
-    assert!(resp.reasoning().is_some(),
-        "expected reasoning content from streamed thinking model");
+    assert!(
+        resp.reasoning().is_some(),
+        "expected reasoning content from streamed thinking model"
+    );
     assert!(!resp.text().is_empty());
     // Reasoning block precedes text block in canonical order.
-    let reasoning_idx = resp.content.iter()
+    let reasoning_idx = resp
+        .content
+        .iter()
         .position(|c| matches!(c, ResponseContent::Reasoning(_)))
         .expect("reasoning block missing");
-    let text_idx = resp.content.iter()
+    let text_idx = resp
+        .content
+        .iter()
         .position(|c| matches!(c, ResponseContent::Text(_)))
         .expect("text block missing");
     assert!(reasoning_idx < text_idx);
@@ -272,7 +301,9 @@ async fn integration_tool_call_required_via_extra_body_disable_thinking() {
     // DeepSeek V4 rejects `tool_choice: required` while thinking is enabled.
     // Use OpenAIExt.extra_body to send `thinking: {type: disabled}` and then
     // Required becomes legal.
-    let Some((p, model)) = provider() else { return; };
+    let Some((p, model)) = provider() else {
+        return;
+    };
     use llm_adapter::openai::{OpenAIExt, OpenAIRequest};
 
     let ext = OpenAIExt::builder()

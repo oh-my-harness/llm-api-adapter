@@ -1,10 +1,6 @@
 mod common;
 
-use llm_adapter::{
-    openai::OpenAIProvider,
-    types::*,
-    Provider,
-};
+use llm_adapter::{Provider, openai::OpenAIProvider, types::*};
 use wiremock::MockServer;
 
 fn provider(server: &MockServer) -> OpenAIProvider {
@@ -35,10 +31,16 @@ async fn deepseek_simple_chat() {
 #[tokio::test]
 async fn deepseek_reasoning_response() {
     let server = MockServer::start().await;
-    common::mock_chat(&server, include_str!("fixtures/deepseek/chat_reasoning.json")).await;
+    common::mock_chat(
+        &server,
+        include_str!("fixtures/deepseek/chat_reasoning.json"),
+    )
+    .await;
 
     let req = ChatRequest::builder("deepseek-v4-flash", 512)
-        .message(Message::User(vec![RequestContent::Text("What is the answer?".into())]))
+        .message(Message::User(vec![RequestContent::Text(
+            "What is the answer?".into(),
+        )]))
         .build();
 
     let resp = provider(&server).chat(&req).await.unwrap();
@@ -47,8 +49,16 @@ async fn deepseek_reasoning_response() {
     assert!(!resp.reasoning().unwrap().is_empty());
     assert!(!resp.text().is_empty());
     // Reasoning block precedes text block.
-    let reasoning_idx = resp.content.iter().position(|c| matches!(c, ResponseContent::Reasoning(_))).unwrap();
-    let text_idx = resp.content.iter().position(|c| matches!(c, ResponseContent::Text(_))).unwrap();
+    let reasoning_idx = resp
+        .content
+        .iter()
+        .position(|c| matches!(c, ResponseContent::Reasoning(_)))
+        .unwrap();
+    let text_idx = resp
+        .content
+        .iter()
+        .position(|c| matches!(c, ResponseContent::Text(_)))
+        .unwrap();
     assert!(reasoning_idx < text_idx);
     // DeepSeek V4 reports reasoning_tokens in completion_tokens_details.
     assert!(resp.usage.reasoning_tokens > 0);

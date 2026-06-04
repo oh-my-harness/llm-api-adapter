@@ -1,9 +1,6 @@
-use std::collections::HashMap;
+use crate::{error::LlmError, types::*};
 use futures::{Stream, StreamExt};
-use crate::{
-    error::LlmError,
-    types::*,
-};
+use std::collections::HashMap;
 
 type BoxStream = futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>;
 
@@ -20,7 +17,11 @@ pub struct StreamHandle {
 
 impl StreamHandle {
     pub(crate) fn new(model: impl Into<String>, inner: BoxStream) -> Self {
-        Self { id: String::new(), model: model.into(), inner }
+        Self {
+            id: String::new(),
+            model: model.into(),
+            inner,
+        }
     }
 
     /// Raw event stream for incremental processing.
@@ -41,8 +42,12 @@ impl StreamHandle {
         while let Some(event) = self.inner.next().await {
             match event? {
                 StreamEvent::ContentStart { index, kind } => match kind {
-                    ContentKind::Text => { text_blocks.insert(index, String::new()); }
-                    ContentKind::Reasoning => { reasoning_blocks.insert(index, String::new()); }
+                    ContentKind::Text => {
+                        text_blocks.insert(index, String::new());
+                    }
+                    ContentKind::Reasoning => {
+                        reasoning_blocks.insert(index, String::new());
+                    }
                     ContentKind::ToolInvocation { id, name } => {
                         tool_starts.insert(index, (id, name));
                         tool_args.insert(index, String::new());
@@ -58,7 +63,10 @@ impl StreamHandle {
                     tool_args.entry(index).or_default().push_str(&arguments);
                 }
                 StreamEvent::ContentStop { .. } => {}
-                StreamEvent::MessageStop { stop_reason: sr, usage: u } => {
+                StreamEvent::MessageStop {
+                    stop_reason: sr,
+                    usage: u,
+                } => {
                     stop_reason = sr;
                     usage = u;
                 }
@@ -75,13 +83,25 @@ impl StreamHandle {
         }
         for (idx, (tool_id, name)) in tool_starts {
             let args = tool_args.remove(&idx).unwrap_or_default();
-            let input = serde_json::from_str(&args)
-                .unwrap_or(serde_json::Value::String(args));
-            all.push((idx, ResponseContent::ToolInvocation(ToolInvocation { id: tool_id, name, input })));
+            let input = serde_json::from_str(&args).unwrap_or(serde_json::Value::String(args));
+            all.push((
+                idx,
+                ResponseContent::ToolInvocation(ToolInvocation {
+                    id: tool_id,
+                    name,
+                    input,
+                }),
+            ));
         }
         all.sort_by_key(|(idx, _)| *idx);
         let content = all.into_iter().map(|(_, c)| c).collect();
 
-        Ok(ChatResponse { id: self.id, model: self.model, content, stop_reason, usage })
+        Ok(ChatResponse {
+            id: self.id,
+            model: self.model,
+            content,
+            stop_reason,
+            usage,
+        })
     }
 }
