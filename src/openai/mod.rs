@@ -187,7 +187,10 @@ impl OpenAIProviderBuilder {
     /// Build the OpenAIProvider instance.
     pub fn build(self) -> OpenAIProvider {
         OpenAIProvider {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .expect("failed to build HTTP client"),
             api_key: self.api_key,
             base_url: self.base_url,
             chat_path: self.chat_path,
