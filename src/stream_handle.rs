@@ -83,7 +83,10 @@ impl StreamHandle {
         }
         for (idx, (tool_id, name)) in tool_starts {
             let args = tool_args.remove(&idx).unwrap_or_default();
-            let input = serde_json::from_str(&args).unwrap_or(serde_json::Value::String(args));
+            let input = serde_json::from_str(&args).unwrap_or_else(|_| {
+                tracing::warn!(args = %args, "tool delta args not valid JSON; falling back to string value");
+                serde_json::Value::String(args)
+            });
             all.push((
                 idx,
                 ResponseContent::ToolInvocation(ToolInvocation {
