@@ -56,7 +56,7 @@ pub(crate) struct AnthropicWireMessage {
 }
 
 /// Message content: either a plain text string or an array of content blocks.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum AnthropicContentBlocks {
     /// Simple text string.
@@ -66,7 +66,7 @@ pub(crate) enum AnthropicContentBlocks {
 }
 
 /// A single content block in a multipart message.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum AnthropicContentBlock {
     /// Text content (optionally with cache control).
@@ -97,7 +97,7 @@ pub(crate) enum AnthropicContentBlock {
 }
 
 /// Image source metadata.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AnthropicImageSource {
     /// Source type (e.g., "base64", "url").
     #[serde(rename = "type")]
@@ -113,7 +113,7 @@ pub(crate) struct AnthropicImageSource {
 }
 
 /// Cache control marker for prompt caching.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AnthropicCacheControl {
     /// Cache control type (e.g., "ephemeral").
     pub r#type: String,
@@ -211,13 +211,11 @@ pub(crate) struct AnthropicUsage {
 /// An SSE event in a streaming response.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)] // Some variants/fields are only read by the stream parser
 pub(crate) enum AnthropicStreamEvent {
     /// First event: message metadata.
     #[serde(rename = "message_start")]
     MessageStart {
-        /// Event type (always "message_start").
-        #[serde(rename = "type")]
-        event_type: String,
         /// The initial message (with empty content).
         message: AnthropicResponse,
     },
@@ -261,6 +259,7 @@ pub(crate) enum AnthropicStreamEvent {
 /// Delta content in a streaming content block update.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(dead_code)] // Some variants are only read by the stream parser
 pub(crate) enum AnthropicDelta {
     /// Text delta.
     #[serde(rename = "text_delta")]
@@ -487,11 +486,7 @@ mod tests {
         });
         let start_event: AnthropicStreamEvent = serde_json::from_value(start_json).unwrap();
         match start_event {
-            AnthropicStreamEvent::MessageStart {
-                event_type,
-                message,
-            } => {
-                assert_eq!(event_type, "message_start");
+            AnthropicStreamEvent::MessageStart { message } => {
                 assert_eq!(message.id, "msg_01xyz");
             }
             other => panic!("expected MessageStart, got {other:?}"),
@@ -514,7 +509,7 @@ mod tests {
         let text_json = serde_json::json!("plain text content");
         let text: AnthropicContentBlocks = serde_json::from_value(text_json).unwrap();
         match text {
-            AnthropicContentBlocks::Text(s) => assert_eq!(s, "plain text content"),
+            AnthropicContentBlocks::Text(ref s) => assert_eq!(s, "plain text content"),
             other => panic!("expected Text, got {other:?}"),
         }
 
@@ -559,7 +554,7 @@ mod tests {
         ]);
         let blocks: AnthropicContentBlocks = serde_json::from_value(blocks_json).unwrap();
         match blocks {
-            AnthropicContentBlocks::Blocks(list) => {
+            AnthropicContentBlocks::Blocks(ref list) => {
                 assert_eq!(list.len(), 6, "expected 6 content blocks");
                 // Text
                 assert!(
