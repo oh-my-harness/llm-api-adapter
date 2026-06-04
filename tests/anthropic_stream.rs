@@ -13,10 +13,16 @@ fn provider(server: &MockServer) -> AnthropicProvider {
 #[tokio::test]
 async fn stream_simple_collects_to_response() {
     let server = MockServer::start().await;
-    common::mock_anthropic_stream(&server, include_str!("fixtures/anthropic/stream_simple.txt")).await;
+    common::mock_anthropic_stream(
+        &server,
+        include_str!("fixtures/anthropic/stream_simple.txt"),
+    )
+    .await;
 
     let req = ChatRequest::builder("deepseek-v4-flash", 256)
-        .message(Message::User(vec![RequestContent::Text("Count from one to three.".into())]))
+        .message(Message::User(vec![RequestContent::Text(
+            "Count from one to three.".into(),
+        )]))
         .build();
 
     let handle = provider(&server).chat_stream(&req).await.unwrap();
@@ -30,10 +36,16 @@ async fn stream_simple_collects_to_response() {
 #[tokio::test]
 async fn stream_events_fire_in_order() {
     let server = MockServer::start().await;
-    common::mock_anthropic_stream(&server, include_str!("fixtures/anthropic/stream_simple.txt")).await;
+    common::mock_anthropic_stream(
+        &server,
+        include_str!("fixtures/anthropic/stream_simple.txt"),
+    )
+    .await;
 
     let req = ChatRequest::builder("deepseek-v4-flash", 256)
-        .message(Message::User(vec![RequestContent::Text("Count from one to three.".into())]))
+        .message(Message::User(vec![RequestContent::Text(
+            "Count from one to three.".into(),
+        )]))
         .build();
 
     let mut handle = provider(&server).chat_stream(&req).await.unwrap();
@@ -60,7 +72,11 @@ async fn stream_events_fire_in_order() {
 #[tokio::test]
 async fn stream_tool_call_collects_invocation() {
     let server = MockServer::start().await;
-    common::mock_anthropic_stream(&server, include_str!("fixtures/anthropic/stream_tool_call.txt")).await;
+    common::mock_anthropic_stream(
+        &server,
+        include_str!("fixtures/anthropic/stream_tool_call.txt"),
+    )
+    .await;
 
     let req = ChatRequest::builder("deepseek-v4-flash", 256)
         .message(Message::User(vec![RequestContent::Text(

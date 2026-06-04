@@ -482,7 +482,11 @@ async fn run_anthropic_chat(
 ) {
     let path = dir.join(filename);
     print!("[anthropic] -> {} ... ", display_path(&path));
-    let url = format!("{}{}", cfg.base_url.trim_end_matches('/'), cfg.messages_path);
+    let url = format!(
+        "{}{}",
+        cfg.base_url.trim_end_matches('/'),
+        cfg.messages_path
+    );
 
     let resp = match client
         .post(&url)
@@ -527,7 +531,11 @@ async fn run_anthropic_stream(
 ) {
     let path = dir.join(filename);
     print!("[anthropic] -> {} (stream) ... ", display_path(&path));
-    let url = format!("{}{}", cfg.base_url.trim_end_matches('/'), cfg.messages_path);
+    let url = format!(
+        "{}{}",
+        cfg.base_url.trim_end_matches('/'),
+        cfg.messages_path
+    );
 
     let resp = match client
         .post(&url)

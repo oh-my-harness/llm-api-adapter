@@ -48,7 +48,11 @@ impl AnthropicProvider {
         anthropic_req: &schema::AnthropicRequest,
         _stream: bool,
     ) -> Result<reqwest::Response, LlmError> {
-        let url = format!("{}{}", self.base_url.trim_end_matches('/'), self.messages_path);
+        let url = format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            self.messages_path
+        );
         let body = serde_json::to_string(anthropic_req)?;
 
         let req = self
@@ -66,10 +70,9 @@ impl AnthropicProvider {
             let error_text = response.text().await?;
 
             // Attempt to parse structured error response
-            let _error_type =
-                serde_json::from_str::<schema::AnthropicErrorResponse>(&error_text)
-                    .ok()
-                    .map(|e| e.error.r#type);
+            let _error_type = serde_json::from_str::<schema::AnthropicErrorResponse>(&error_text)
+                .ok()
+                .map(|e| e.error.r#type);
 
             return match status.as_u16() {
                 401 => Err(LlmError::Unauthorized),

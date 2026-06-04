@@ -1,8 +1,8 @@
+use crate::LlmError;
 use crate::types::{
     ChatRequest, ChatResponse, Message, RequestContent, ResponseContent, StopReason, ToolChoice,
     ToolInvocation, Usage,
 };
-use crate::LlmError;
 
 use super::schema::{
     AnthropicContentBlock, AnthropicContentBlocks, AnthropicImageSource, AnthropicResponse,
@@ -143,8 +143,10 @@ pub(crate) fn to_anthropic(
     let ext = ext.unwrap_or(&default_ext);
 
     // Split system messages from the rest.
-    let (system_blocks, conversation_messages): (Vec<&Message>, Vec<&Message>) =
-        req.messages().iter().partition(|m| matches!(m, Message::System(_)));
+    let (system_blocks, conversation_messages): (Vec<&Message>, Vec<&Message>) = req
+        .messages()
+        .iter()
+        .partition(|m| matches!(m, Message::System(_)));
 
     // Convert system messages to AnthropicContentBlocks (joined with '\n').
     let system = if system_blocks.is_empty() {
@@ -251,15 +253,21 @@ pub(crate) fn to_anthropic(
     let params = req.params();
 
     // Convert thinking config.
-    let thinking = ext.thinking.as_ref().map(|t| super::schema::AnthropicThinkingConfig {
-        r#type: "enabled".into(),
-        budget_tokens: Some(t.budget_tokens),
-    });
+    let thinking = ext
+        .thinking
+        .as_ref()
+        .map(|t| super::schema::AnthropicThinkingConfig {
+            r#type: "enabled".into(),
+            budget_tokens: Some(t.budget_tokens),
+        });
 
     // Convert metadata.
-    let metadata = ext.metadata.as_ref().map(|m| super::schema::AnthropicMetadata {
-        user_id: m.user_id.clone(),
-    });
+    let metadata = ext
+        .metadata
+        .as_ref()
+        .map(|m| super::schema::AnthropicMetadata {
+            user_id: m.user_id.clone(),
+        });
 
     // Convert messages from our helper struct back to schema type.
     let messages: Vec<super::schema::AnthropicWireMessage> = wire_messages
@@ -341,9 +349,7 @@ fn assistant_content_to_wire(content: &[ResponseContent]) -> AnthropicWireMessag
     }
     let content = if blocks.len() == 1 {
         match &blocks[0] {
-            AnthropicContentBlock::Text { text, .. } => {
-                AnthropicContentBlocks::Text(text.clone())
-            }
+            AnthropicContentBlock::Text { text, .. } => AnthropicContentBlocks::Text(text.clone()),
             _ => AnthropicContentBlocks::Blocks(blocks),
         }
     } else {
@@ -371,9 +377,12 @@ fn request_content_to_blocks(content: &[RequestContent]) -> AnthropicContentBloc
                     crate::types::ImageSource::Url(u) => {
                         ("url".into(), String::new(), None, Some(u.clone()))
                     }
-                    crate::types::ImageSource::Base64 { media_type, data } => {
-                        ("base64".into(), media_type.clone(), Some(data.clone()), None)
-                    }
+                    crate::types::ImageSource::Base64 { media_type, data } => (
+                        "base64".into(),
+                        media_type.clone(),
+                        Some(data.clone()),
+                        None,
+                    ),
                 };
                 blocks.push(AnthropicContentBlock::Image {
                     source: AnthropicImageSource {
@@ -387,13 +396,10 @@ fn request_content_to_blocks(content: &[RequestContent]) -> AnthropicContentBloc
         }
     }
 
-    if blocks.len() == 1 {
-        match &blocks[0] {
-            AnthropicContentBlock::Text { text, .. } => {
-                return AnthropicContentBlocks::Text(text.clone());
-            }
-            _ => {}
-        }
+    if blocks.len() == 1
+        && let AnthropicContentBlock::Text { text, .. } = &blocks[0]
+    {
+        return AnthropicContentBlocks::Text(text.clone());
     }
     AnthropicContentBlocks::Blocks(blocks)
 }
@@ -458,7 +464,10 @@ fn apply_cache_hints(
     let mut flat_index = 0usize;
     for msg in &mut messages {
         // Take the content to modify it.
-        let new_content = match std::mem::replace(&mut msg.content, AnthropicContentBlocks::Text(String::new())) {
+        let new_content = match std::mem::replace(
+            &mut msg.content,
+            AnthropicContentBlocks::Text(String::new()),
+        ) {
             AnthropicContentBlocks::Blocks(mut blocks) => {
                 for block in &mut blocks {
                     for hint in hints {
@@ -483,14 +492,10 @@ fn apply_cache_hints(
 
 /// Add ephemeral cache_control to a content block if it supports it.
 fn apply_cache_control_to_block(block: &mut AnthropicContentBlock) {
-    match block {
-        AnthropicContentBlock::Text { cache_control, .. } => {
-            *cache_control = Some(super::schema::AnthropicCacheControl {
-                r#type: "ephemeral".into(),
-            });
-        }
-        // Other block types don't receive cache control in this implementation.
-        _ => {}
+    if let AnthropicContentBlock::Text { cache_control, .. } = block {
+        *cache_control = Some(super::schema::AnthropicCacheControl {
+            r#type: "ephemeral".into(),
+        });
     }
 }
 
@@ -542,7 +547,10 @@ fn anthropic_response_block_to_canonical(block: AnthropicResponseBlock) -> Respo
         AnthropicResponseBlock::ToolUse { id, name, input } => {
             ResponseContent::ToolInvocation(ToolInvocation { id, name, input })
         }
-        AnthropicResponseBlock::Thinking { thinking, signature: _ } => {
+        AnthropicResponseBlock::Thinking {
+            thinking,
+            signature: _,
+        } => {
             // Signature is dropped; reasoning is read-only in canonical form.
             ResponseContent::Reasoning(thinking)
         }
@@ -583,7 +591,9 @@ pub(crate) fn anthropic_usage_to_canonical(u: AnthropicUsage) -> Usage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ImageSource, RequestContent as RC, ResponseContent as RespC, ToolDef, ToolInvocation as TI};
+    use crate::types::{
+        ImageSource, RequestContent as RC, ResponseContent as RespC, ToolDef, ToolInvocation as TI,
+    };
 
     #[test]
     fn ext_builder_defaults() {
@@ -600,7 +610,9 @@ mod tests {
         let ext = AnthropicExt::builder()
             .top_k(50)
             .disable_parallel_tool_use()
-            .thinking(ThinkingConfig { budget_tokens: 2000 })
+            .thinking(ThinkingConfig {
+                budget_tokens: 2000,
+            })
             .metadata(AnthropicMetadata {
                 user_id: Some("user_123".into()),
             })
@@ -679,7 +691,10 @@ mod tests {
         // The last user message should contain a tool_result block
         match &wire.messages[2].content {
             AnthropicContentBlocks::Blocks(blocks) => {
-                assert!(matches!(blocks[0], AnthropicContentBlock::ToolResult { .. }));
+                assert!(matches!(
+                    blocks[0],
+                    AnthropicContentBlock::ToolResult { .. }
+                ));
             }
             other => panic!("expected Blocks, got {other:?}"),
         }
@@ -849,10 +864,7 @@ mod tests {
             .tool_choice(ToolChoice::Auto)
             .build();
         let wire = to_anthropic(&req_auto, None, false).unwrap();
-        assert_eq!(
-            wire.tool_choice,
-            Some(serde_json::json!({"type": "auto"}))
-        );
+        assert_eq!(wire.tool_choice, Some(serde_json::json!({"type": "auto"})));
 
         let req_none = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
             .message(Message::User(vec![RC::Text("Hi".into())]))
@@ -864,10 +876,7 @@ mod tests {
             .tool_choice(ToolChoice::None)
             .build();
         let wire = to_anthropic(&req_none, None, false).unwrap();
-        assert_eq!(
-            wire.tool_choice,
-            Some(serde_json::json!({"type": "none"}))
-        );
+        assert_eq!(wire.tool_choice, Some(serde_json::json!({"type": "none"})));
 
         let req_required = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
             .message(Message::User(vec![RC::Text("Hi".into())]))
@@ -879,10 +888,7 @@ mod tests {
             .tool_choice(ToolChoice::Required)
             .build();
         let wire = to_anthropic(&req_required, None, false).unwrap();
-        assert_eq!(
-            wire.tool_choice,
-            Some(serde_json::json!({"type": "any"}))
-        );
+        assert_eq!(wire.tool_choice, Some(serde_json::json!({"type": "any"})));
 
         let req_specific = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
             .message(Message::User(vec![RC::Text("Hi".into())]))
@@ -1018,10 +1024,7 @@ mod tests {
             .message(Message::User(vec![RC::Text("Hi".into())]))
             .build();
         let ext = AnthropicExt::builder().top_k(40).build();
-        let req = AnthropicRequest {
-            base,
-            ext,
-        };
+        let req = AnthropicRequest { base, ext };
         assert_eq!(req.base.model(), "claude-sonnet-4-20250514");
         assert_eq!(req.ext.top_k, Some(40));
     }
