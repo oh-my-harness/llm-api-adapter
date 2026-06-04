@@ -1,5 +1,5 @@
 event: message_start
-data: {"type":"message_start","message":{"id":"chatcmpl-a6efeb609e835cab","content":[],"model":"DeepSeek-V4-Flash","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":18,"output_tokens":0}}}
+data: {"type":"message_start","message":{"id":"chatcmpl-8583a0eef41abb48","content":[],"model":"DeepSeek-V4-Flash","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":18,"output_tokens":0}}}
 
 event: content_block_start
 data: {"type":"content_block_start","content_block":{"type":"text","text":""},"index":0}
