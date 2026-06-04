@@ -373,4 +373,4 @@ examples/
 
 ## License
 
-尚未指定 —— 发布到 crates.io 前需要补上。
+MIT。详见 [LICENSE](LICENSE)。
