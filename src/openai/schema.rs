@@ -43,6 +43,10 @@ pub(crate) struct OaiRequest {
     /// Unique identifier for tracking requests.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    /// Reasoning effort for o-series / GPT-5 models ("low", "medium", "high", etc.).
+    /// Has no effect on models that do not support reasoning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 /// Options for streaming responses.
@@ -170,9 +174,12 @@ pub(crate) struct OaiUsage {
     pub prompt_tokens: u32,
     /// Number of tokens in the completion.
     pub completion_tokens: u32,
-    /// Detailed prompt token breakdown.
+    /// Detailed prompt token breakdown (OpenAI).
     #[serde(default)]
     pub prompt_tokens_details: Option<OaiPromptTokensDetails>,
+    /// Detailed completion token breakdown (OpenAI: includes reasoning_tokens).
+    #[serde(default)]
+    pub completion_tokens_details: Option<OaiCompletionTokensDetails>,
     /// DeepSeek cache hit tokens.
     #[serde(default)]
     pub prompt_cache_hit_tokens: u32,
@@ -181,9 +188,17 @@ pub(crate) struct OaiUsage {
 /// Detailed breakdown of prompt tokens.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub(crate) struct OaiPromptTokensDetails {
-    /// Number of cached prompt tokens (if using prompt caching).
+    /// Number of cached prompt tokens (OpenAI prompt caching).
     #[serde(default)]
     pub cached_tokens: u32,
+}
+
+/// Detailed breakdown of completion tokens.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct OaiCompletionTokensDetails {
+    /// Tokens consumed by internal reasoning (o-series / GPT-5).
+    #[serde(default)]
+    pub reasoning_tokens: u32,
 }
 
 // ── Streaming ─────────────────────────────────────────────────────────────────
