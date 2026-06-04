@@ -151,14 +151,15 @@ pub fn process_event(
             state.open_blocks.clear();
 
             // Build usage from initial_message with updated output_tokens.
-            let usage = state.initial_message.as_ref().map_or_else(
-                crate::types::Usage::default,
-                |msg| {
-                    let mut u = msg.usage.clone();
-                    u.output_tokens = state.output_tokens;
-                    anthropic_usage_to_canonical(u)
-                },
-            );
+            let usage =
+                state
+                    .initial_message
+                    .as_ref()
+                    .map_or_else(crate::types::Usage::default, |msg| {
+                        let mut u = msg.usage.clone();
+                        u.output_tokens = state.output_tokens;
+                        anthropic_usage_to_canonical(u)
+                    });
 
             let stop_reason = parse_stop_reason(state.pending_stop_reason.as_deref());
 
