@@ -22,11 +22,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .map_err(|_| "ANTHROPIC_API_KEY is not set (try `source .env` first)")?;
+    let base_url =
+        std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| "https://api.anthropic.com".into());
+    let messages_path =
+        std::env::var("ANTHROPIC_MESSAGES_PATH").unwrap_or_else(|_| "/v1/messages".into());
     let model =
         std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-4-6-20250514".into());
 
     let p = AnthropicProvider::builder(api_key)
-        .base_url("https://api.anthropic.com")
+        .base_url(base_url)
+        .messages_path(messages_path)
         .build();
 
     let weather_tool = ToolDef {
