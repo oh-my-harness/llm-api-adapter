@@ -439,28 +439,6 @@ fn apply_cache_hints(
     mut messages: Vec<super::schema::AnthropicWireMessage>,
     hints: &[CacheHint],
 ) -> Vec<super::schema::AnthropicWireMessage> {
-    // Build a flat index across all content blocks in all messages.
-    let mut flat_index = 0usize;
-    for msg in &mut messages {
-        match &msg.content {
-            AnthropicContentBlocks::Blocks(blocks) => {
-                for _block in blocks {
-                    for hint in hints {
-                        if hint.block_index == flat_index && hint.ephemeral {
-                            // We need to mutate the block — we can't borrow mutably here
-                            // since blocks is behind a shared ref. Collect the info and do it in a second pass.
-                        }
-                    }
-                    flat_index += 1;
-                }
-            }
-            AnthropicContentBlocks::Text(_) => {
-                flat_index += 1;
-            }
-        }
-    }
-
-    // Second pass: actually apply hints.
     let mut flat_index = 0usize;
     for msg in &mut messages {
         // Take the content to modify it.
