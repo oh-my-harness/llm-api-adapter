@@ -1,6 +1,9 @@
 //! Hold `Box<dyn Provider>` and pick OpenAI, DeepSeek, or Anthropic at runtime
 //! via a `PROVIDER` env var. The downstream call site doesn't know which.
 //!
+//! Demonstrates both the non-streaming and streaming paths with the same
+//! request, highlighting reasoning blocks when present.
+//!
 //! Run with:
 //!   PROVIDER=openai    cargo run --example runtime_switch
 //!   PROVIDER=deepseek  cargo run --example runtime_switch
@@ -9,9 +12,11 @@
 //! Reads from .env. Same OPENAI_* / DEEPSEEK_* / ANTHROPIC_* variables as the
 //! other examples.
 
+use futures::StreamExt;
 use llm_adapter::{
     Provider, anthropic::AnthropicProvider, deepseek, openai::OpenAIProvider, types::*,
 };
+use std::io::Write;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -72,9 +77,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )]))
         .build();
 
-    // Identical call site regardless of which provider sits behind the box.
+    // --- Non-streaming path ---
+    println!("--- chat() ---");
     let resp = provider.chat(&req).await?;
     println!("{}", resp.text());
+    if let Some(r) = resp.reasoning() {
+        println!("(reasoning: {r})");
+    }
+
+    // --- Streaming path (same request) ---
+    println!("--- chat_stream() ---");
+    let mut handle = provider.chat_stream(&req).await?;
+    let mut reasoning_count = 0usize;
+
+    while let Some(event) = handle.events().next().await {
+        match event? {
+            StreamEvent::TextDelta { text, .. } => {
+                print!("{text}");
+                std::io::stdout().flush().ok();
+            }
+            StreamEvent::ReasoningDelta { .. } => {
+                reasoning_count += 1;
+            }
+            StreamEvent::ContentStart {
+                kind: ContentKind::Reasoning,
+                ..
+            } => {}
+            StreamEvent::ContentStop { .. } => {}
+            _ => {}
+        }
+    }
+
+    if reasoning_count > 0 {
+        println!("(stream contained {reasoning_count} reasoning blocks)");
+    }
+    println!();
     Ok(())
 }
 
