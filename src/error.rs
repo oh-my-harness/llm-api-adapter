@@ -1,10 +1,11 @@
 use std::time::Duration;
 
-/// Unified error type for all LLM provider operations.
+/// Normalised error type for all LLM provider operations.
 ///
-/// This enum normalizes errors from different providers (OpenAI, Anthropic, etc.)
-/// into a canonical set of error types. Provider-specific errors are converted
-/// to these types when crossing the provider boundary.
+/// Maps provider-specific errors (OpenAI, Anthropic, DeepSeek, etc.) into
+/// canonical variants. Callers can match on these variants to implement
+/// retry logic, error reporting, or graceful degradation without coupling
+/// to any specific provider's wire format.
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
     /// Request was malformed or contained invalid parameters.

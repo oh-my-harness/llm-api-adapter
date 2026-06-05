@@ -4,11 +4,16 @@ use std::collections::HashMap;
 
 type BoxStream = futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>;
 
-/// Handle returned by `Provider::chat_stream`.
+/// Streaming response handle returned by [`crate::provider::Provider::chat_stream`].
 ///
-/// Use `events()` for incremental processing or `collect()` to fold the full
-/// stream into a `ChatResponse` (id and model will be empty when collected
-/// from a streamed response — use `chat()` if you need them).
+/// Provides two usage modes:
+///
+/// - **Incremental**: call [`events()`](StreamHandle::events) to process
+///   each [`StreamEvent`] as it arrives (e.g. for a per-token UX).
+/// - **Collect**: call [`collect()`](StreamHandle::collect) to fold all
+///   events into a [`ChatResponse`] (note: `id` and `model` fields may be
+///   empty when collected from streaming — use
+///   [`crate::provider::Provider::chat`] if you need them).
 pub struct StreamHandle {
     pub(crate) id: String,
     pub(crate) model: String,
@@ -25,11 +30,32 @@ impl StreamHandle {
     }
 
     /// Raw event stream for incremental processing.
+    ///
+    /// Yields [`StreamEvent`] values as the provider sends them. Use this
+    /// for real-time per-token UX.
+    ///
+    /// # Errors
+    ///
+    /// Each item is `Result<StreamEvent, LlmError>` — an `Err` terminates
+    /// the stream.
     pub fn events(&mut self) -> &mut impl Stream<Item = Result<StreamEvent, LlmError>> {
         &mut self.inner
     }
 
-    /// Fold all events into a complete `ChatResponse`.
+    /// Read the entire stream and fold all events into a [`ChatResponse`].
+    ///
+    /// Convenience method that handles aggregation of deltas, assembles
+    /// content blocks in index order, and preserves the final stop reason
+    /// and usage.
+    ///
+    /// # Caveats
+    ///
+    /// - The `id` field on the resulting `ChatResponse` will be empty
+    ///   (streaming responses from most providers do not include an ID).
+    /// - The `model` field is populated from the initial request, not
+    ///   from the provider's stream response.
+    /// - `Reasoning.signature` will always be `None` (streaming responses
+    ///   from Anthropic cannot preserve thinking signatures).
     pub async fn collect(mut self) -> Result<ChatResponse, LlmError> {
         let mut text_blocks: HashMap<usize, String> = HashMap::new();
         let mut reasoning_blocks: HashMap<usize, String> = HashMap::new();
