@@ -97,14 +97,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::io::stdout().flush().ok();
             }
             StreamEvent::ReasoningDelta { text, .. } => {
-                eprint!("{text}");
+                eprint!("[reasoning] {text}");
                 std::io::stderr().flush().ok();
                 reasoning_count += 1;
             }
             StreamEvent::ContentStart {
                 kind: ContentKind::Reasoning,
                 ..
-            } => {}
+            } => {
+                eprint!("[reasoning start] ");
+            }
             StreamEvent::ContentStop { .. } => {}
             _ => {}
         }
