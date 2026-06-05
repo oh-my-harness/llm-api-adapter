@@ -150,15 +150,15 @@ println!("{}", resp.text());
 use llm_adapter::types::*;
 use serde_json::json;
 
-let weather_tool = ToolDef {
-    name: "get_weather".into(),
-    description: "获取某个城市的当前天气。".into(),
-    input_schema: json!({
+let weather_tool = ToolDef::new(
+    "get_weather",
+    "获取某个城市的当前天气。",
+    json!({
         "type": "object",
         "properties": {"location": {"type": "string"}},
         "required": ["location"],
     }),
-};
+);
 
 let req = ChatRequest::builder("gpt-4o-mini", 512)
     .message(Message::User(vec![RequestContent::Text(
@@ -225,6 +225,58 @@ let resp = anthropic_provider.chat_native(&anth_req).await?;
 let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 ```
 
+## Provider 配置
+
+### OpenAIProvider
+
+| 方法 | 默认值 | 说明 |
+|---|---|---|
+| `base_url(url)` | `https://api.openai.com` | API endpoint 主机地址 |
+| `chat_path(path)` | `/v1/chat/completions` | Chat completion 路径 |
+| `parse_reasoning_content(false)` | 关闭 | 解析 `reasoning_content` 字段（DeepSeek） |
+| `tolerant_keepalive(false)` | 关闭 | 容忍 SSE 中的 keepalive 字节（DeepSeek） |
+
+### AnthropicProvider
+
+| 方法 | 默认值 | 说明 |
+|---|---|---|
+| `base_url(url)` | `https://api.anthropic.com` | API endpoint 主机地址 |
+| `messages_path(path)` | `/v1/messages` | Messages API 路径 |
+
+### OpenAIExt
+
+| 方法 | 默认值 | 说明 |
+|---|---|---|
+| `seed(n)` | 无 | 确定性采样种子 |
+| `frequency_penalty(f)` | 无 | 频率惩罚（-2.0 到 2.0） |
+| `presence_penalty(f)` | 无 | 存在惩罚（-2.0 到 2.0） |
+| `user(id)` | 无 | 用于监控的最终用户标识 |
+| `reasoning_effort(s)` | 无 | `"low"` \| `"medium"` \| `"high"`（o 系列） |
+| `extra_body(val)` | 无 | 用于网关兼容的任意 JSON 字段 |
+| `parse_reasoning_content()` | 关闭 | 解析 DeepSeek `reasoning_content` |
+| `tolerant_keepalive()` | 关闭 | 容忍 SSE 中的 keepalive 字节 |
+
+### AnthropicExt
+
+| 方法 | 默认值 | 说明 |
+|---|---|---|
+| `top_k(n)` | 无 | 仅从概率最高的 K 个 token 采样 |
+| `thinking(config)` | 无 | 使用 `budget_tokens` 配置扩展思考 |
+| `metadata(m)` | 无 | 用于 Anthropic 控制台的 `user_id` |
+| `disable_parallel_tool_use()` | false | 强制每轮只调用一个工具 |
+| `cache_hint(hint)` | 无 | 针对指定 block index 的临时提示缓存控制 |
+
+### 相同提示，不同 provider
+
+由于库将所有响应归一化为相同的 canonical 类型，可以比较不同 provider 在相同输入下的行为：
+
+| 行为 | OpenAI (gpt-4o) | Anthropic (claude-sonnet) | DeepSeek (deepseek-v4-flash) |
+|---|---|---|---|
+| Tool calling | 以 `ToolUse` 停止 | 以 `ToolUse` 停止 | 以 `ToolUse` 停止 |
+| Reasoning | 通过 `reasoning_effort` → `ResponseContent::Reasoning` | Extended Thinking → `ResponseContent::Reasoning { signature }` | 默认开启（V4）→ `ResponseContent::Reasoning` |
+| 图片输入 | 支持 | 支持 | 不支持 |
+| 多轮 thinking | N/A | 需要通过 `AnthropicNativeResponse::into_message()` 往返传递 `signature` | N/A |
+
 ## 核心概念
 
 ### Canonical 类型
@@ -240,7 +292,7 @@ pub enum Message {
 }
 
 pub enum RequestContent  { Text(String), Image(ImageSource) }
-pub enum ResponseContent { Text(String), ToolInvocation(ToolInvocation), Reasoning(String) }
+pub enum ResponseContent { Text(String), ToolInvocation(ToolInvocation), Reasoning { text: String, signature: Option<String> } }
 pub enum StopReason      { EndTurn, MaxTokens, StopSequence, ToolUse, ContentFilter, Other(String) }
 ```
 
