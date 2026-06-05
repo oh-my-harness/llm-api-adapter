@@ -10,8 +10,7 @@ calling.
 
 **Status:** pre-release (v0.1.0). Public API is unstable until v1.0.
 
-[![codecov](https://codecov.io/gh/USER/llm_adapter/branch/main/graph/badge.svg)](https://codecov.io/gh/USER/llm_adapter)
-<!-- TODO: replace USER with actual GitHub username when publishing -->
+[![codecov](https://codecov.io/gh/hhllhhyyds/llm-api-adapter/branch/main/graph/badge.svg)](https://codecov.io/gh/hhllhhyyds/llm-api-adapter)
 
 ## What it is
 
