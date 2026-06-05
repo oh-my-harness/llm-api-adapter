@@ -263,7 +263,7 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 | `top_k(n)` | 无 | 仅从概率最高的 K 个 token 采样 |
 | `thinking(config)` | 无 | 使用 `budget_tokens` 配置扩展思考 |
 | `metadata(m)` | 无 | 用于 Anthropic 控制台的 `user_id` |
-| `disable_parallel_tool_use()` | false | 强制每轮只调用一个工具 |
+| `disable_parallel_tool_use()` | 关闭 | 强制每轮只调用一个工具 |
 | `cache_hint(hint)` | 无 | 针对指定 block index 的临时提示缓存控制 |
 
 ### 相同提示，不同 provider

@@ -278,7 +278,7 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 | `top_k(n)` | none | Only sample from top K tokens |
 | `thinking(config)` | none | Extended thinking with `budget_tokens` |
 | `metadata(m)` | none | `user_id` for Anthropic dashboard |
-| `disable_parallel_tool_use()` | false | Force single tool call per turn |
+| `disable_parallel_tool_use()` | disabled | Force single tool call per turn |
 | `cache_hint(hint)` | none | Ephemeral prompt cache control for a block index |
 
 ### Same prompt, different providers
