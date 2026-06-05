@@ -11,7 +11,18 @@ use std::time::Duration;
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 const DEFAULT_CHAT_PATH: &str = "/v1/chat/completions";
 
-/// OpenAI (and OpenAI-compatible) provider, constructed via `OpenAIProvider::builder`.
+/// OpenAI (and OpenAI-compatible) provider implementation.
+///
+/// Supports the OpenAI Chat Completions API and any compatible endpoint
+/// (e.g. DeepSeek, GitHub Models, Azure OpenAI-compatible gateways).
+/// Construct via [`OpenAIProvider::builder()`].
+///
+/// Use the [`Provider`] trait methods ([`chat()`](Provider::chat),
+/// [`chat_stream()`](Provider::chat_stream)) for provider-agnostic usage,
+/// or the native-path methods ([`chat_native()`](OpenAIProvider::chat_native),
+/// [`chat_stream_native()`](OpenAIProvider::chat_stream_native)) when you
+/// need provider-specific extensions like `seed`, `frequency_penalty`,
+/// or `extra_body`.
 pub struct OpenAIProvider {
     client: reqwest::Client,
     api_key: String,
@@ -21,7 +32,10 @@ pub struct OpenAIProvider {
     tolerant_keepalive: bool,
 }
 
-/// Builder for OpenAIProvider with fluent configuration API.
+/// Builder for [`OpenAIProvider`] with fluent configuration API.
+///
+/// Created via [`OpenAIProvider::builder()`]. At minimum you must provide
+/// the API key; all other settings have sensible defaults.
 pub struct OpenAIProviderBuilder {
     api_key: String,
     base_url: String,
@@ -122,6 +136,11 @@ impl OpenAIProvider {
     }
 
     /// Chat completion using the native OpenAI path (streaming).
+    ///
+    /// Accepts `OpenAIRequest` (a `ChatRequest` paired with `OpenAIExt`) so
+    /// callers can use provider-specific streaming extensions.
+    /// Returns a [`StreamHandle`] that
+    /// yields incremental [`StreamEvent`] values.
     pub async fn chat_stream_native(&self, req: &OpenAIRequest) -> Result<StreamHandle, LlmError> {
         let oai_req = convert::to_oai(&req.base, Some(&req.ext), true)?;
         let response = self
@@ -158,7 +177,7 @@ fn merge_extra_body(
 }
 
 impl OpenAIProviderBuilder {
-    /// Set the base URL for the API (default: "https://api.openai.com").
+    /// Set the base URL for the API (default: `"https://api.openai.com"`).
     pub fn base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = url.into();
         self

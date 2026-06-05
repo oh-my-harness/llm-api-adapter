@@ -77,7 +77,14 @@ impl AnthropicNativeResponse {
     }
 }
 
-/// Anthropic Messages API provider, constructed via `AnthropicProvider::builder`.
+/// Anthropic Messages API provider, constructed via [`AnthropicProvider::builder()`].
+///
+/// Supports the Anthropic Messages API endpoint. Use the [`Provider`] trait
+/// methods for provider-agnostic usage, or the native-path methods
+/// ([`chat_native()`](AnthropicProvider::chat_native),
+/// [`chat_stream_native()`](AnthropicProvider::chat_stream_native)) when you
+/// need Anthropic-specific extensions like `thinking`, `metadata`, `top_k`,
+/// or `cache_hints`.
 pub struct AnthropicProvider {
     client: reqwest::Client,
     api_key: String,
@@ -85,7 +92,10 @@ pub struct AnthropicProvider {
     messages_path: String,
 }
 
-/// Builder for AnthropicProvider with fluent configuration API.
+/// Builder for [`AnthropicProvider`] with fluent configuration API.
+///
+/// Created via [`AnthropicProvider::builder()`]. At minimum you must provide
+/// the API key; all other settings have sensible defaults.
 pub struct AnthropicProviderBuilder {
     api_key: String,
     base_url: String,
@@ -199,7 +209,7 @@ impl AnthropicProvider {
 }
 
 impl AnthropicProviderBuilder {
-    /// Set the base URL for the API (default: "https://api.anthropic.com").
+    /// Set the base URL for the API (default: `"https://api.anthropic.com"`).
     pub fn base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = url.into();
         self
