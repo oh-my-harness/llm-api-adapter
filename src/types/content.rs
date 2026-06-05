@@ -65,7 +65,7 @@ pub struct ToolInvocation {
 ///
 /// | Variant | When it appears |
 /// |---------|----------------|
-/// | [`Text`](ResponseContent::Text) | The model's visible output; present in every response. |
+/// | [`Text`](ResponseContent::Text) | The model's visible output. May be absent when the model only calls tools. |
 /// | [`ToolInvocation`](ResponseContent::ToolInvocation) | The model wants to call a tool (`stop_reason == ToolUse`). |
 /// | [`Reasoning`](ResponseContent::Reasoning) | Chain-of-thought (OpenAI `reasoning_content`, DeepSeek `reasoning_content`, Anthropic `thinking`). |
 ///
