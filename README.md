@@ -162,15 +162,15 @@ println!("{}", resp.text());
 use llm_adapter::types::*;
 use serde_json::json;
 
-let weather_tool = ToolDef {
-    name: "get_weather".into(),
-    description: "Get current weather for a city.".into(),
-    input_schema: json!({
+let weather_tool = ToolDef::new(
+    "get_weather",
+    "Get current weather for a city.",
+    json!({
         "type": "object",
         "properties": {"location": {"type": "string"}},
         "required": ["location"],
     }),
-};
+);
 
 let req = ChatRequest::builder("gpt-4o-mini", 512)
     .message(Message::User(vec![RequestContent::Text(
@@ -240,6 +240,59 @@ let resp = anthropic_provider.chat_native(&anth_req).await?;
 let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 ```
 
+## Provider configuration
+
+### OpenAIProvider
+
+| Method | Default | Description |
+|---|---|---|
+| `base_url(url)` | `https://api.openai.com` | API endpoint host |
+| `chat_path(path)` | `/v1/chat/completions` | Chat completion path |
+| `parse_reasoning_content(false)` | disabled | Parse `reasoning_content` field (DeepSeek) |
+| `tolerant_keepalive(false)` | disabled | Tolerate keepalive bytes in SSE (DeepSeek) |
+
+### AnthropicProvider
+
+| Method | Default | Description |
+|---|---|---|
+| `base_url(url)` | `https://api.anthropic.com` | API endpoint host |
+| `messages_path(path)` | `/v1/messages` | Messages API path |
+
+### OpenAIExt
+
+| Method | Default | Description |
+|---|---|---|
+| `seed(n)` | none | Deterministic sampling seed |
+| `frequency_penalty(f)` | none | Frequency penalty (-2.0 to 2.0) |
+| `presence_penalty(f)` | none | Presence penalty (-2.0 to 2.0) |
+| `user(id)` | none | End-user identifier for monitoring |
+| `reasoning_effort(s)` | none | `"low"` \| `"medium"` \| `"high"` (o-series) |
+| `extra_body(val)` | none | Arbitrary JSON fields for gateway compat |
+| `parse_reasoning_content()` | disabled | Parse DeepSeek `reasoning_content` |
+| `tolerant_keepalive()` | disabled | Tolerate keepalive bytes in SSE |
+
+### AnthropicExt
+
+| Method | Default | Description |
+|---|---|---|
+| `top_k(n)` | none | Only sample from top K tokens |
+| `thinking(config)` | none | Extended thinking with `budget_tokens` |
+| `metadata(m)` | none | `user_id` for Anthropic dashboard |
+| `disable_parallel_tool_use()` | false | Force single tool call per turn |
+| `cache_hint(hint)` | none | Ephemeral prompt cache control for a block index |
+
+### Same prompt, different providers
+
+Because the library normalises all responses to the same canonical types,
+you can compare how providers behave on identical input:
+
+| Behaviour | OpenAI (gpt-4o) | Anthropic (claude-sonnet) | DeepSeek (deepseek-v4-flash) |
+|---|---|---|---|
+| Tools | stops with `ToolUse` | stops with `ToolUse` | stops with `ToolUse` |
+| Reasoning | via `reasoning_effort` → `ResponseContent::Reasoning` | Extended Thinking → `ResponseContent::Reasoning { signature }` | Always-on (V4 default) → `ResponseContent::Reasoning` |
+| Image input | supported | supported | not supported |
+| Multi-turn thinking | N/A | requires `signature` round-trip via `AnthropicNativeResponse::into_message()` | N/A |
+
 ## Core concepts
 
 ### Canonical types
@@ -257,7 +310,7 @@ pub enum Message {
 }
 
 pub enum RequestContent  { Text(String), Image(ImageSource) }
-pub enum ResponseContent { Text(String), ToolInvocation(ToolInvocation), Reasoning(String) }
+pub enum ResponseContent { Text(String), ToolInvocation(ToolInvocation), Reasoning { text: String, signature: Option<String> } }
 pub enum StopReason      { EndTurn, MaxTokens, StopSequence, ToolUse, ContentFilter, Other(String) }
 ```
 
