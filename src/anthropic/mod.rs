@@ -90,6 +90,7 @@ pub struct AnthropicProvider {
     api_key: String,
     base_url: String,
     messages_path: String,
+    capabilities: crate::provider::ProviderCapabilities,
 }
 
 /// Builder for [`AnthropicProvider`] with fluent configuration API.
@@ -100,6 +101,7 @@ pub struct AnthropicProviderBuilder {
     api_key: String,
     base_url: String,
     messages_path: String,
+    capabilities: crate::provider::ProviderCapabilities,
 }
 
 fn extract_retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
@@ -120,6 +122,11 @@ impl AnthropicProvider {
             api_key: api_key.into(),
             base_url: DEFAULT_BASE_URL.to_string(),
             messages_path: DEFAULT_MESSAGES_PATH.to_string(),
+            capabilities: crate::provider::ProviderCapabilities {
+                images: true,
+                reasoning: true,
+                json_schema: false,
+            },
         }
     }
 
@@ -233,12 +240,17 @@ impl AnthropicProviderBuilder {
             api_key: self.api_key,
             base_url: self.base_url,
             messages_path: self.messages_path,
+            capabilities: self.capabilities,
         }
     }
 }
 
 #[async_trait]
 impl Provider for AnthropicProvider {
+    fn capabilities(&self) -> crate::provider::ProviderCapabilities {
+        self.capabilities.clone()
+    }
+
     async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, LlmError> {
         let anthropic_req = AnthropicRequest {
             base: req.clone(),
