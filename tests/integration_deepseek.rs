@@ -326,3 +326,30 @@ async fn integration_tool_call_required_via_extra_body_disable_thinking() {
     assert_eq!(invocations.len(), 1);
     assert_eq!(invocations[0].name, "get_weather");
 }
+
+#[tokio::test]
+async fn integration_image_input_returns_error() {
+    // DeepSeek V3/V4 do not support image input. Sending an image_url
+    // message should result in an error (4xx from the API).
+    // If this test starts *passing* (no error), update deepseek::client()
+    // capabilities to set images: true.
+    let Some((p, model)) = provider() else {
+        return;
+    };
+
+    let req = ChatRequest::builder(model, 256)
+        .message(Message::User(vec![
+            RequestContent::Text("What is in this image?".into()),
+            RequestContent::Image(
+                ImageSource::Url("https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg".into())
+            ),
+        ]))
+        .build();
+
+    let result = p.chat(&req).await;
+    assert!(
+        result.is_err(),
+        "Expected error for image input on DeepSeek (images not supported); got: {:?}",
+        result
+    );
+}

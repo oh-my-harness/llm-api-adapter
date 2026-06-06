@@ -7,7 +7,7 @@ pub mod stream_handle;
 pub mod types;
 
 pub use error::LlmError;
-pub use provider::Provider;
+pub use provider::{Provider, ProviderCapabilities};
 pub use stream_handle::StreamHandle;
 pub use types::*;
 
@@ -254,5 +254,44 @@ mod tests {
     fn deepseek_factory_returns_openai_provider() {
         use openai::OpenAIProvider;
         let _p: OpenAIProvider = deepseek::client("test-key");
+    }
+
+    #[test]
+    fn provider_capabilities_openai() {
+        let p = openai::OpenAIProvider::builder("key").build();
+        let caps = p.capabilities();
+        assert!(caps.supports_images());
+        assert!(caps.supports_reasoning());
+        assert!(caps.supports_json_schema());
+    }
+
+    #[test]
+    fn provider_capabilities_anthropic() {
+        let p = anthropic::AnthropicProvider::builder("key").build();
+        let caps = p.capabilities();
+        assert!(caps.supports_images());
+        assert!(caps.supports_reasoning());
+        assert!(!caps.supports_json_schema());
+    }
+
+    #[test]
+    fn provider_capabilities_deepseek() {
+        use openai::OpenAIProvider;
+        let p: OpenAIProvider = deepseek::client("key");
+        let caps = p.capabilities();
+        assert!(
+            !caps.supports_images(),
+            "DeepSeek V3/Flash does not support images"
+        );
+        assert!(caps.supports_reasoning());
+        assert!(caps.supports_json_schema());
+    }
+
+    #[test]
+    fn provider_capabilities_box_dyn_provider() {
+        let p: Box<dyn provider::Provider> =
+            Box::new(openai::OpenAIProvider::builder("key").build());
+        let caps = p.capabilities();
+        assert!(caps.supports_images());
     }
 }
