@@ -33,19 +33,18 @@ To keep the surface area honest, this library deliberately does **not** do:
 
 - Retry / backoff (the caller decides)
 - Agent loops, prompt templating, conversation persistence
-- Structured output / JSON Schema enforcement
 - Batch API, embeddings, TTS, image generation
 - Azure OpenAI (different auth scheme + deployment-based routing)
 - The stateful OpenAI Responses API
 
 ## Supported providers
 
-| Provider | Universal path | Native extensions | Streaming | Tool calls | Reasoning |
-|---|---|---|---|---|---|
-| OpenAI Chat Completions | ✅ | `OpenAIExt`: seed, penalties, `reasoning_effort`, `extra_body` | ✅ | ✅ | `reasoning_effort` (o-series / GPT-5) |
-| DeepSeek (`api.deepseek.com`) | ✅ (factory `deepseek::client`) | `OpenAIExt` (e.g. `extra_body: {"thinking": {"type": "disabled"}}`) | ✅ | ✅ | `reasoning_content` parsed into `ResponseContent::Reasoning` |
-| Anthropic Messages | ✅ | `AnthropicExt`: top_k, thinking, metadata, cache_hints | ✅ | ✅ | Extended Thinking (thinking block → `ResponseContent::Reasoning`) |
-| Any OpenAI-compatible gateway | ✅ via `base_url` + `chat_path` overrides | `extra_body` for non-standard fields | ✅ | ✅ | depends on endpoint |
+| Provider | Universal path | Native extensions | Streaming | Tool calls | Reasoning | Structured output |
+|---|---|---|---|---|---|---|
+| OpenAI Chat Completions | ✅ | `OpenAIExt`: seed, penalties, `reasoning_effort`, `response_format`, `extra_body` | ✅ | ✅ | `reasoning_effort` (o-series / GPT-5) | ✅ (json_object, json_schema) |
+| DeepSeek (`api.deepseek.com`) | ✅ (factory `deepseek::client`) | `OpenAIExt` (e.g. `extra_body: {"thinking": {"type": "disabled"}}`) | ✅ | ✅ | `reasoning_content` parsed into `ResponseContent::Reasoning` | via `extra_body` |
+| Anthropic Messages | ✅ | `AnthropicExt`: top_k, thinking, metadata, cache_hints, `structured_output` | ✅ | ✅ | Extended Thinking (thinking block → `ResponseContent::Reasoning`) | ✅ (Strict Tool Use) |
+| Any OpenAI-compatible gateway | ✅ via `base_url` + `chat_path` overrides | `extra_body` for non-standard fields | ✅ | ✅ | depends on endpoint | via `extra_body` |
 
 Tested compatible gateways for the path-override path: GitHub Models
 (`/chat/completions` no `/v1`), OpenRouter (`/api/v1/...`), Groq
@@ -201,6 +200,66 @@ if matches!(resp.stop_reason, StopReason::ToolUse) {
 }
 ```
 
+### Structured output (OpenAI and Anthropic)
+
+**OpenAI** — use the canonical `response_format` builder:
+
+```rust
+use llm_adapter::types::*;
+use serde_json::json;
+
+let schema = json!({
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "year": {"type": "integer"}
+    },
+    "required": ["title", "year"]
+});
+
+let req = ChatRequest::builder("gpt-4o-mini", 512)
+    .message(Message::User(vec![RequestContent::Text(
+        "Return info about 1984 by Orwell.".into(),
+    )]))
+    .response_format(ResponseFormat::JsonSchema {
+        name: "book_info".into(),
+        schema,
+        strict: Some(true),
+    })
+    .build();
+
+let resp = provider.chat(&req).await?;
+let parsed: serde_json::Value = serde_json::from_str(&resp.text())?;
+println!("{}", parsed["title"]);
+```
+
+**Anthropic** — use the native path with `structured_output`:
+
+```rust
+use llm_adapter::anthropic::{AnthropicExt, AnthropicRequest};
+use serde_json::json;
+
+let schema = json!({
+    "type": "object",
+    "properties": {"title": {"type": "string"}, "year": {"type": "integer"}},
+    "required": ["title", "year"]
+});
+
+let ext = AnthropicExt::builder()
+    .structured_output(schema)
+    .build();
+
+let anth_req = AnthropicRequest { base: chat_req, ext };
+let resp = anthropic_provider.chat_native(&anth_req).await?;
+
+// Extract the structured result from the tool invocation
+let inv = resp.into_canonical()
+    .tool_invocations()
+    .next()
+    .unwrap();
+println!("{}", inv.input["title"]);
+```
+
 ### Provider-specific extensions (native path)
 
 The universal `Provider::chat` path is schema-neutral. When you need
@@ -269,6 +328,7 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 | `presence_penalty(f)` | none | Presence penalty (-2.0 to 2.0) |
 | `user(id)` | none | End-user identifier for monitoring |
 | `reasoning_effort(s)` | none | `"low"` \| `"medium"` \| `"high"` (o-series) |
+| `response_format(fmt)` | none | `ResponseFormat::JsonObject` or `JsonSchema { name, schema, strict }` |
 | `extra_body(val)` | none | Arbitrary JSON fields for gateway compat |
 | `parse_reasoning_content()` | disabled | Parse DeepSeek `reasoning_content` |
 | `tolerant_keepalive()` | disabled | Tolerate keepalive bytes in SSE |
@@ -282,6 +342,7 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 | `metadata(m)` | none | `user_id` for Anthropic dashboard |
 | `disable_parallel_tool_use()` | disabled | Force single tool call per turn |
 | `cache_hint(hint)` | none | Ephemeral prompt cache control for a block index |
+| `structured_output(schema)` | none | JSON schema for structured output (via Strict Tool Use) |
 
 ### Same prompt, different providers
 
@@ -502,8 +563,6 @@ examples/
   (`AnthropicExt.cache_hints`) for cache-control markers.
 - **Retry / backoff** is not built in. Look at `LlmError::RateLimit` /
   `LlmError::Overloaded`'s `retry_after` and decide in your application.
-- **Structured Output** (`response_format: json_schema`) is not yet
-  exposed. Add it via `OpenAIExt.extra_body` for now.
 
 ## License
 
