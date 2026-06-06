@@ -27,6 +27,12 @@ pub struct AnthropicExt {
     pub metadata: Option<AnthropicMetadata>,
     /// Hints for prompt caching applied to specific content blocks.
     pub cache_hints: Vec<CacheHint>,
+    /// JSON schema for structured output via Strict Tool Use.
+    ///
+    /// When set, `to_anthropic()` injects a synthetic `"structured_result"` tool
+    /// carrying this schema and forces `tool_choice` to that tool.  The caller
+    /// extracts the result from `resp.tool_invocations().next()`.
+    pub structured_output: Option<serde_json::Value>,
 }
 
 /// Extended thinking configuration.
@@ -67,6 +73,7 @@ pub struct AnthropicExtBuilder {
     thinking: Option<ThinkingConfig>,
     metadata: Option<AnthropicMetadata>,
     cache_hints: Vec<CacheHint>,
+    structured_output: Option<serde_json::Value>,
 }
 
 impl AnthropicExtBuilder {
@@ -100,6 +107,15 @@ impl AnthropicExtBuilder {
         self
     }
 
+    /// Force the model to return a structured JSON result conforming to `schema`.
+    ///
+    /// Implemented via Strict Tool Use: a synthetic `"structured_result"` tool is
+    /// injected into the request and `tool_choice` is forced to that tool.
+    pub fn structured_output(mut self, schema: serde_json::Value) -> Self {
+        self.structured_output = Some(schema);
+        self
+    }
+
     /// Build the AnthropicExt instance.
     pub fn build(self) -> AnthropicExt {
         AnthropicExt {
@@ -108,6 +124,7 @@ impl AnthropicExtBuilder {
             thinking: self.thinking,
             metadata: self.metadata,
             cache_hints: self.cache_hints,
+            structured_output: self.structured_output,
         }
     }
 }
@@ -233,7 +250,7 @@ pub(crate) fn to_anthropic(
     check_alternation(&wire_messages)?;
 
     // Convert tools.
-    let tools: Vec<super::schema::AnthropicTool> = req
+    let mut tools: Vec<super::schema::AnthropicTool> = req
         .tools()
         .iter()
         .map(|t| super::schema::AnthropicTool {
@@ -243,8 +260,20 @@ pub(crate) fn to_anthropic(
         })
         .collect();
 
+    // Inject synthetic structured-output tool if requested.
+    if let Some(schema) = &ext.structured_output {
+        tools.push(super::schema::AnthropicTool {
+            name: "structured_result".into(),
+            description: "Return the structured result.".into(),
+            input_schema: schema.clone(),
+        });
+    }
+
     // Convert tool choice.
-    let tool_choice = if req.tools().is_empty() {
+    let tool_choice = if ext.structured_output.is_some() {
+        // Force the synthetic tool regardless of any canonical tool_choice.
+        Some(serde_json::json!({"type": "tool", "name": "structured_result"}))
+    } else if req.tools().is_empty() {
         None
     } else {
         Some(tool_choice_to_anthropic(req.tool_choice()))
@@ -1055,6 +1084,44 @@ mod tests {
         let canon = from_anthropic(resp).unwrap();
         assert_eq!(canon.content.len(), 1);
         assert_eq!(canon.text(), "Hello");
+    }
+
+    #[test]
+    fn ext_builder_with_structured_output() {
+        let schema = serde_json::json!({"type": "object", "properties": {"x": {"type": "string"}}});
+        let ext = AnthropicExt::builder()
+            .structured_output(schema.clone())
+            .build();
+        assert_eq!(ext.structured_output, Some(schema));
+    }
+
+    #[test]
+    fn structured_output_injects_tool_and_forces_choice() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        });
+        let req = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
+            .message(Message::User(vec![RC::Text("Answer the question.".into())]))
+            .build();
+        let ext = AnthropicExt::builder()
+            .structured_output(schema.clone())
+            .build();
+
+        let wire = to_anthropic(&req, Some(&ext), false).unwrap();
+
+        assert_eq!(wire.tools.len(), 1, "expected exactly one injected tool");
+        assert_eq!(wire.tools[0].name, "structured_result");
+        assert_eq!(
+            wire.tools[0].input_schema, schema,
+            "injected schema must match the one provided"
+        );
+        assert_eq!(
+            wire.tool_choice,
+            Some(serde_json::json!({"type": "tool", "name": "structured_result"})),
+            "tool_choice must be forced to structured_result"
+        );
     }
 
     #[test]
