@@ -279,14 +279,18 @@ mod tests {
         use openai::OpenAIProvider;
         let p: OpenAIProvider = deepseek::client("key");
         let caps = p.capabilities();
-        assert!(!caps.supports_images(), "DeepSeek V3/Flash does not support images");
+        assert!(
+            !caps.supports_images(),
+            "DeepSeek V3/Flash does not support images"
+        );
         assert!(caps.supports_reasoning());
         assert!(caps.supports_json_schema());
     }
 
     #[test]
     fn provider_capabilities_box_dyn_provider() {
-        let p: Box<dyn provider::Provider> = Box::new(openai::OpenAIProvider::builder("key").build());
+        let p: Box<dyn provider::Provider> =
+            Box::new(openai::OpenAIProvider::builder("key").build());
         let caps = p.capabilities();
         assert!(caps.supports_images());
     }
