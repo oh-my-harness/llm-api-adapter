@@ -1,5 +1,25 @@
 use super::message::Message;
 
+/// Controls the format of the model's response.
+///
+/// Pass to [`ChatRequestBuilder::response_format()`] to request structured output.
+/// Currently only forwarded by `OpenAIProvider`; `AnthropicProvider` ignores it
+/// (use the native path with tool-forcing for Anthropic structured output).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponseFormat {
+    /// Force the model to emit valid JSON (no specific schema).
+    JsonObject,
+    /// Force the model to emit JSON conforming to the supplied JSON Schema.
+    JsonSchema {
+        /// Logical name for the schema (required by OpenAI wire format).
+        name: String,
+        /// JSON Schema object describing the expected output.
+        schema: serde_json::Value,
+        /// When `Some(true)`, the model is required to strictly follow the schema.
+        strict: Option<bool>,
+    },
+}
+
 /// Definition of a callable tool that the model can invoke.
 ///
 /// `input_schema` is a JSON Schema object — use `serde_json::json!` to construct it:
@@ -177,6 +197,7 @@ pub struct ChatRequest {
     pub(crate) tools: Vec<ToolDef>,
     pub(crate) tool_choice: ToolChoice,
     pub(crate) params: SamplingParams,
+    pub(crate) response_format: Option<ResponseFormat>,
 }
 
 impl ChatRequest {
@@ -193,6 +214,7 @@ impl ChatRequest {
             top_p: None,
             max_tokens,
             stop_sequences: Vec::new(),
+            response_format: None,
         }
     }
 
@@ -220,6 +242,11 @@ impl ChatRequest {
     pub fn params(&self) -> &SamplingParams {
         &self.params
     }
+
+    /// The requested response format, if any.
+    pub fn response_format(&self) -> Option<&ResponseFormat> {
+        self.response_format.as_ref()
+    }
 }
 
 /// Builder for [`ChatRequest`]. Created via [`ChatRequest::builder()`].
@@ -242,6 +269,7 @@ pub struct ChatRequestBuilder {
     top_p: Option<f32>,
     max_tokens: u32,
     stop_sequences: Vec<String>,
+    response_format: Option<ResponseFormat>,
 }
 
 impl ChatRequestBuilder {
@@ -300,6 +328,12 @@ impl ChatRequestBuilder {
         self
     }
 
+    /// Set the response format. See [`ResponseFormat`] for options.
+    pub fn response_format(mut self, f: ResponseFormat) -> Self {
+        self.response_format = Some(f);
+        self
+    }
+
     /// Consume the builder and produce a [`ChatRequest`].
     pub fn build(self) -> ChatRequest {
         ChatRequest {
@@ -313,6 +347,45 @@ impl ChatRequestBuilder {
                 top_p: self.top_p,
                 stop_sequences: self.stop_sequences,
             },
+            response_format: self.response_format,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_format_json_object_builder() {
+        let req = ChatRequest::builder("gpt-4o", 512)
+            .response_format(ResponseFormat::JsonObject)
+            .build();
+        assert_eq!(req.response_format(), Some(&ResponseFormat::JsonObject));
+    }
+
+    #[test]
+    fn response_format_json_schema_builder() {
+        let schema = serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
+        let req = ChatRequest::builder("gpt-4o", 512)
+            .response_format(ResponseFormat::JsonSchema {
+                name: "person".into(),
+                schema: schema.clone(),
+                strict: Some(true),
+            })
+            .build();
+        match req.response_format() {
+            Some(ResponseFormat::JsonSchema { name, strict, .. }) => {
+                assert_eq!(name, "person");
+                assert_eq!(*strict, Some(true));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn response_format_none_by_default() {
+        let req = ChatRequest::builder("gpt-4o", 512).build();
+        assert!(req.response_format().is_none());
     }
 }
