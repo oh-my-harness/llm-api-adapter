@@ -47,6 +47,10 @@ pub(crate) struct OaiRequest {
     /// Has no effect on models that do not support reasoning.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Response format for structured output.
+    /// `{"type": "json_object"}` or `{"type": "json_schema", "json_schema": {...}}`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<serde_json::Value>,
 }
 
 /// Options for streaming responses.
