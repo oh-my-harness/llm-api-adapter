@@ -341,7 +341,7 @@ async fn integration_image_input_returns_error() {
         .message(Message::User(vec![
             RequestContent::Text("What is in this image?".into()),
             RequestContent::Image(
-                crate::types::ImageSource::Url("https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg".into())
+                ImageSource::Url("https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg".into())
             ),
         ]))
         .build();
