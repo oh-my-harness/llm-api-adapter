@@ -14,7 +14,11 @@
 mod common;
 
 use futures::StreamExt;
-use llm_adapter::{Provider, anthropic::AnthropicProvider, types::*};
+use llm_adapter::{
+    Provider,
+    anthropic::{AnthropicExt, AnthropicProvider, AnthropicRequest},
+    types::*,
+};
 
 /// Returns `None` when the test should be skipped.
 fn provider() -> Option<(AnthropicProvider, String)> {
@@ -218,4 +222,69 @@ async fn integration_stream_tool_call() {
     assert!(!invocations.is_empty());
     assert_eq!(invocations[0].name, "get_weather");
     assert!(invocations[0].input.get("location").is_some());
+}
+
+#[tokio::test]
+async fn integration_structured_output() {
+    let Some((p, model)) = provider() else {
+        return;
+    };
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "title":  {"type": "string"},
+            "year":   {"type": "integer"},
+            "author": {"type": "string"}
+        },
+        "required": ["title", "year", "author"]
+    });
+    let base = ChatRequest::builder(model, 512)
+        .message(Message::User(vec![RequestContent::Text(
+            "Return information about the novel '1984' by George Orwell.".into(),
+        )]))
+        .build();
+    let ext = AnthropicExt::builder().structured_output(schema).build();
+    let anthropic_req = AnthropicRequest { base, ext };
+
+    let resp = p
+        .chat_native(&anthropic_req)
+        .await
+        .expect("chat_native failed");
+    let canon = resp.into_canonical();
+
+    assert!(
+        matches!(canon.stop_reason, StopReason::ToolUse),
+        "expected ToolUse stop reason; got: {:?}",
+        canon.stop_reason
+    );
+
+    let inv = canon
+        .tool_invocations()
+        .next()
+        .expect("expected at least one tool invocation");
+    assert_eq!(inv.name, "structured_result");
+
+    let title = inv
+        .input
+        .get("title")
+        .and_then(|v| v.as_str())
+        .expect("missing 'title' field");
+    assert!(!title.is_empty(), "title should be non-empty");
+
+    let year = inv
+        .input
+        .get("year")
+        .and_then(|v| v.as_i64())
+        .expect("missing 'year' field");
+    assert_eq!(year, 1949, "1984 was published in 1949");
+
+    let author = inv
+        .input
+        .get("author")
+        .and_then(|v| v.as_str())
+        .expect("missing 'author' field");
+    assert!(
+        author.to_lowercase().contains("orwell"),
+        "expected Orwell as author; got: {author}"
+    );
 }
