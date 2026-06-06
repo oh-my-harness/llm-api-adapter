@@ -75,11 +75,10 @@ cargo run --example record_fixtures
 
 ## 已知问题与边界
 
-- **Anthropic 尚未实现**：TODO.md 有详细规划。
-- **Azure OpenAI 不支持**：认证用 `api-key` header 而非 Bearer，路径含 deployment ID。
+- **Azure OpenAI 不支持**：认证用 `api-key` header 而非 Bearer，路径含 deployment ID.
 - **OpenAI Responses API 不支持**：只做 Chat Completions。
 - **Prompt caching 只能读不能写**：`Usage.cached_input_tokens` 可查看缓存命中，但 canonical 层不支持 Anthropic 风格 cache_control 标记（随 Anthropic provider 加入）。
-- **Structured Output**：当前可通过 `extra_body` 传递 `response_format`，无 canonical 层支持。
+- **Structured Output**：OpenAI 通过 `ChatRequest::response_format()` 支持 json_object 和 json_schema；Anthropic 通过 `AnthropicExt::structured_output()` 用 Strict Tool Use 实现。
 - **LlmError** 当前缺少 `PaymentRequired` 变体（HTTP 402 DeepSeek 独有），当前映射为 `Provider { code: "payment_required", ... }`。如果要 et 它的 display、Eq 等算子要看是否要加正式变体。
 
 ## 环境
