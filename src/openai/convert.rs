@@ -144,6 +144,29 @@ pub struct OpenAIRequest {
 
 // ── Conversion: Canonical → OpenAI ──────────────────────────────────────────
 
+/// Convert a canonical ResponseFormat to an OpenAI response_format value.
+fn response_format_to_oai(fmt: &crate::types::ResponseFormat) -> serde_json::Value {
+    match fmt {
+        crate::types::ResponseFormat::JsonObject => {
+            serde_json::json!({"type": "json_object"})
+        }
+        crate::types::ResponseFormat::JsonSchema {
+            name,
+            schema,
+            strict,
+        } => {
+            let mut js = serde_json::json!({
+                "name": name,
+                "schema": schema,
+            });
+            if let Some(s) = strict {
+                js["strict"] = serde_json::Value::Bool(*s);
+            }
+            serde_json::json!({"type": "json_schema", "json_schema": js})
+        }
+    }
+}
+
 /// Convert a canonical ChatRequest to an OpenAI OaiRequest.
 ///
 /// # Arguments
@@ -213,6 +236,7 @@ pub(crate) fn to_oai(
         presence_penalty: ext.presence_penalty,
         user: ext.user.clone(),
         reasoning_effort: ext.reasoning_effort.clone(),
+        response_format: req.response_format().map(response_format_to_oai),
     })
 }
 
@@ -476,5 +500,62 @@ pub(crate) fn oai_usage_to_canonical(u: OaiUsage, _parse_reasoning: bool) -> Usa
         cached_input_tokens,
         cache_creation_input_tokens: 0,
         reasoning_tokens,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Message;
+
+    #[test]
+    fn response_format_json_object_serializes() {
+        use crate::types::ResponseFormat;
+        let req = ChatRequest::builder("gpt-4o", 512)
+            .message(Message::User(vec![crate::types::RequestContent::Text(
+                "hi".into(),
+            )]))
+            .response_format(ResponseFormat::JsonObject)
+            .build();
+        let oai = to_oai(&req, None, false).unwrap();
+        let body = serde_json::to_value(&oai).unwrap();
+        assert_eq!(body["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn response_format_json_schema_serializes() {
+        use crate::types::ResponseFormat;
+        let schema = serde_json::json!({"type": "object"});
+        let req = ChatRequest::builder("gpt-4o", 512)
+            .message(Message::User(vec![crate::types::RequestContent::Text(
+                "hi".into(),
+            )]))
+            .response_format(ResponseFormat::JsonSchema {
+                name: "out".into(),
+                schema: schema.clone(),
+                strict: Some(true),
+            })
+            .build();
+        let oai = to_oai(&req, None, false).unwrap();
+        let body = serde_json::to_value(&oai).unwrap();
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(body["response_format"]["json_schema"]["name"], "out");
+        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"]["type"],
+            "object"
+        );
+    }
+
+    #[test]
+    fn response_format_none_omitted() {
+        let req = ChatRequest::builder("gpt-4o", 512)
+            .message(Message::User(vec![crate::types::RequestContent::Text(
+                "hi".into(),
+            )]))
+            .build();
+        let oai = to_oai(&req, None, false).unwrap();
+        let body = serde_json::to_value(&oai).unwrap();
+        assert!(body.get("response_format").is_none() || body["response_format"].is_null());
     }
 }

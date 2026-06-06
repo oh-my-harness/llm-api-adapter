@@ -30,6 +30,7 @@ pub struct OpenAIProvider {
     chat_path: String,
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
+    capabilities: crate::provider::ProviderCapabilities,
 }
 
 /// Builder for [`OpenAIProvider`] with fluent configuration API.
@@ -42,6 +43,7 @@ pub struct OpenAIProviderBuilder {
     chat_path: String,
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
+    capabilities: crate::provider::ProviderCapabilities,
 }
 
 fn extract_retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
@@ -64,6 +66,11 @@ impl OpenAIProvider {
             chat_path: DEFAULT_CHAT_PATH.to_string(),
             parse_reasoning_content: false,
             tolerant_keepalive: false,
+            capabilities: crate::provider::ProviderCapabilities {
+                images: true,
+                reasoning: true,
+                json_schema: true,
+            },
         }
     }
 
@@ -204,6 +211,12 @@ impl OpenAIProviderBuilder {
         self
     }
 
+    /// Override provider capabilities (used by factory functions such as `deepseek::client`).
+    pub(crate) fn capabilities(mut self, caps: crate::provider::ProviderCapabilities) -> Self {
+        self.capabilities = caps;
+        self
+    }
+
     /// Build the OpenAIProvider instance.
     pub fn build(self) -> OpenAIProvider {
         OpenAIProvider {
@@ -216,12 +229,17 @@ impl OpenAIProviderBuilder {
             chat_path: self.chat_path,
             parse_reasoning_content: self.parse_reasoning_content,
             tolerant_keepalive: self.tolerant_keepalive,
+            capabilities: self.capabilities,
         }
     }
 }
 
 #[async_trait]
 impl Provider for OpenAIProvider {
+    fn capabilities(&self) -> crate::provider::ProviderCapabilities {
+        self.capabilities.clone()
+    }
+
     async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, LlmError> {
         let oai_req = OpenAIRequest {
             base: req.clone(),
