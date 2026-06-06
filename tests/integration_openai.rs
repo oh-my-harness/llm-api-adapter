@@ -227,3 +227,76 @@ async fn integration_stream_tool_call() {
     assert_eq!(invocations[0].name, "get_weather");
     assert!(invocations[0].input.get("location").is_some());
 }
+
+#[tokio::test]
+async fn integration_response_format_json_object() {
+    let Some((p, model)) = provider() else {
+        return;
+    };
+    let req = ChatRequest::builder(model, 512)
+        .message(Message::User(vec![RequestContent::Text(
+            "Return a JSON object with a single key \"greeting\" \
+             whose value is a short greeting string."
+                .into(),
+        )]))
+        .response_format(ResponseFormat::JsonObject)
+        .build();
+
+    let resp = p.chat(&req).await.expect("chat failed");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&resp.text()).expect("response must be valid JSON");
+    assert!(
+        parsed.get("greeting").is_some(),
+        "expected 'greeting' key in JSON response; got: {}",
+        resp.text()
+    );
+}
+
+#[tokio::test]
+async fn integration_response_format_json_schema() {
+    let Some((p, model)) = provider() else {
+        return;
+    };
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "title":  {"type": "string"},
+            "year":   {"type": "integer"},
+            "author": {"type": "string"}
+        },
+        "required": ["title", "year", "author"],
+        "additionalProperties": false
+    });
+    let req = ChatRequest::builder(model, 512)
+        .message(Message::User(vec![RequestContent::Text(
+            "Return information about the novel '1984' by George Orwell.".into(),
+        )]))
+        .response_format(ResponseFormat::JsonSchema {
+            name: "book_info".into(),
+            schema,
+            strict: Some(true),
+        })
+        .build();
+
+    let resp = p.chat(&req).await.expect("chat failed");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&resp.text()).expect("response must be valid JSON");
+    let title = parsed
+        .get("title")
+        .and_then(|v| v.as_str())
+        .expect("missing 'title' field");
+    assert!(!title.is_empty(), "title should be non-empty");
+    let year = parsed
+        .get("year")
+        .and_then(|v| v.as_i64())
+        .expect("missing 'year' field");
+    assert_eq!(year, 1949, "1984 was published in 1949");
+    let author = parsed
+        .get("author")
+        .and_then(|v| v.as_str())
+        .expect("missing 'author' field");
+    assert!(
+        author.to_lowercase().contains("orwell"),
+        "expected Orwell as author; got: {author}"
+    );
+}
