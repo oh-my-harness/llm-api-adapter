@@ -150,7 +150,11 @@ fn response_format_to_oai(fmt: &crate::types::ResponseFormat) -> serde_json::Val
         crate::types::ResponseFormat::JsonObject => {
             serde_json::json!({"type": "json_object"})
         }
-        crate::types::ResponseFormat::JsonSchema { name, schema, strict } => {
+        crate::types::ResponseFormat::JsonSchema {
+            name,
+            schema,
+            strict,
+        } => {
             let mut js = serde_json::json!({
                 "name": name,
                 "schema": schema,
@@ -508,7 +512,9 @@ mod tests {
     fn response_format_json_object_serializes() {
         use crate::types::ResponseFormat;
         let req = ChatRequest::builder("gpt-4o", 512)
-            .message(Message::User(vec![crate::types::RequestContent::Text("hi".into())]))
+            .message(Message::User(vec![crate::types::RequestContent::Text(
+                "hi".into(),
+            )]))
             .response_format(ResponseFormat::JsonObject)
             .build();
         let oai = to_oai(&req, None, false).unwrap();
@@ -521,7 +527,9 @@ mod tests {
         use crate::types::ResponseFormat;
         let schema = serde_json::json!({"type": "object"});
         let req = ChatRequest::builder("gpt-4o", 512)
-            .message(Message::User(vec![crate::types::RequestContent::Text("hi".into())]))
+            .message(Message::User(vec![crate::types::RequestContent::Text(
+                "hi".into(),
+            )]))
             .response_format(ResponseFormat::JsonSchema {
                 name: "out".into(),
                 schema: schema.clone(),
@@ -533,13 +541,18 @@ mod tests {
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(body["response_format"]["json_schema"]["name"], "out");
         assert_eq!(body["response_format"]["json_schema"]["strict"], true);
-        assert_eq!(body["response_format"]["json_schema"]["schema"]["type"], "object");
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"]["type"],
+            "object"
+        );
     }
 
     #[test]
     fn response_format_none_omitted() {
         let req = ChatRequest::builder("gpt-4o", 512)
-            .message(Message::User(vec![crate::types::RequestContent::Text("hi".into())]))
+            .message(Message::User(vec![crate::types::RequestContent::Text(
+                "hi".into(),
+            )]))
             .build();
         let oai = to_oai(&req, None, false).unwrap();
         let body = serde_json::to_value(&oai).unwrap();
