@@ -375,8 +375,9 @@ mod tests {
             })
             .build();
         match req.response_format() {
-            Some(ResponseFormat::JsonSchema { name, strict, .. }) => {
+            Some(ResponseFormat::JsonSchema { name, schema, strict }) => {
                 assert_eq!(name, "person");
+                assert_eq!(schema, &serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}}));
                 assert_eq!(*strict, Some(true));
             }
             other => panic!("unexpected: {other:?}"),
