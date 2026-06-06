@@ -366,7 +366,8 @@ mod tests {
 
     #[test]
     fn response_format_json_schema_builder() {
-        let schema = serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
         let req = ChatRequest::builder("gpt-4o", 512)
             .response_format(ResponseFormat::JsonSchema {
                 name: "person".into(),
@@ -375,9 +376,16 @@ mod tests {
             })
             .build();
         match req.response_format() {
-            Some(ResponseFormat::JsonSchema { name, schema, strict }) => {
+            Some(ResponseFormat::JsonSchema {
+                name,
+                schema,
+                strict,
+            }) => {
                 assert_eq!(name, "person");
-                assert_eq!(schema, &serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}}));
+                assert_eq!(
+                    schema,
+                    &serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}})
+                );
                 assert_eq!(*strict, Some(true));
             }
             other => panic!("unexpected: {other:?}"),
