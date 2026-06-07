@@ -21,6 +21,15 @@ pub struct ProviderCapabilities {
 }
 
 impl ProviderCapabilities {
+    /// Create a new `ProviderCapabilities` instance.
+    pub fn new(images: bool, reasoning: bool, json_schema: bool) -> Self {
+        Self {
+            images,
+            reasoning,
+            json_schema,
+        }
+    }
+
     /// Returns `true` if this provider accepts image content in user messages.
     pub fn supports_images(&self) -> bool {
         self.images
