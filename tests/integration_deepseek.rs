@@ -353,3 +353,34 @@ async fn integration_image_input_returns_error() {
         result
     );
 }
+
+#[tokio::test]
+async fn integration_response_format_json_object() {
+    let Some((p, model)) = provider() else {
+        return;
+    };
+    let req = ChatRequest::builder(model, 512)
+        .message(Message::User(vec![RequestContent::Text(
+            "Return a JSON object with a single key \"greeting\" \
+             whose value is a short greeting string."
+                .into(),
+        )]))
+        .response_format(ResponseFormat::JsonObject)
+        .build();
+
+    let resp = p.chat(&req).await.expect("chat failed");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&resp.text()).expect("response must be valid JSON");
+    assert!(
+        parsed.get("greeting").is_some(),
+        "expected 'greeting' key in JSON response; got: {}",
+        resp.text()
+    );
+}
+
+#[tokio::test]
+async fn integration_response_format_json_schema() {
+    // DeepSeek V4 does not support response_format: json_schema.
+    // json_schema is tested in integration_openai.rs against a compatible backend.
+    println!("[skip] json_schema response_format not supported by DeepSeek V4");
+}

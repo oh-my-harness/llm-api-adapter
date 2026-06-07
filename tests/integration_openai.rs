@@ -257,6 +257,12 @@ async fn integration_response_format_json_schema() {
     let Some((p, model)) = provider() else {
         return;
     };
+    // DeepSeek does not support response_format: json_schema — skip explicitly
+    // so the test can still validate the happy path against real OpenAI.
+    if common::opt_env("OPENAI_PROVIDER_KIND").as_deref() == Some("deepseek") {
+        println!("[skip] json_schema response_format not supported by DeepSeek backend");
+        return;
+    }
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
