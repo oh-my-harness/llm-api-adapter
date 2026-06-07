@@ -29,6 +29,16 @@ impl StreamHandle {
         }
     }
 
+    /// Create a `StreamHandle` from a raw stream — for testing and adapters only.
+    pub fn from_raw_stream(model: impl Into<String>, inner: BoxStream) -> Self {
+        Self::new(model, inner)
+    }
+
+    /// Returns the model name reported by the provider for this stream.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     /// Raw event stream for incremental processing.
     ///
     /// Yields [`StreamEvent`] values as the provider sends them. Use this
