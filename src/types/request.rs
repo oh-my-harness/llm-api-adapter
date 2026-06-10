@@ -198,6 +198,9 @@ pub struct ChatRequest {
     pub(crate) tool_choice: ToolChoice,
     pub(crate) params: SamplingParams,
     pub(crate) response_format: Option<ResponseFormat>,
+    /// Extended thinking token budget; `None` disables thinking.
+    /// Supported by Anthropic models; ignored by other providers.
+    pub(crate) extended_thinking_budget: Option<u32>,
 }
 
 impl ChatRequest {
@@ -215,6 +218,7 @@ impl ChatRequest {
             max_tokens,
             stop_sequences: Vec::new(),
             response_format: None,
+            extended_thinking_budget: None,
         }
     }
 
@@ -247,6 +251,11 @@ impl ChatRequest {
     pub fn response_format(&self) -> Option<&ResponseFormat> {
         self.response_format.as_ref()
     }
+
+    /// Extended thinking token budget (`None` means thinking is disabled).
+    pub fn extended_thinking_budget(&self) -> Option<u32> {
+        self.extended_thinking_budget
+    }
 }
 
 /// Builder for [`ChatRequest`]. Created via [`ChatRequest::builder()`].
@@ -270,6 +279,7 @@ pub struct ChatRequestBuilder {
     max_tokens: u32,
     stop_sequences: Vec<String>,
     response_format: Option<ResponseFormat>,
+    extended_thinking_budget: Option<u32>,
 }
 
 impl ChatRequestBuilder {
@@ -334,6 +344,13 @@ impl ChatRequestBuilder {
         self
     }
 
+    /// Enable extended thinking with the given token budget.
+    /// Supported by Anthropic models; ignored by other providers.
+    pub fn extended_thinking_budget(mut self, budget: u32) -> Self {
+        self.extended_thinking_budget = Some(budget);
+        self
+    }
+
     /// Consume the builder and produce a [`ChatRequest`].
     pub fn build(self) -> ChatRequest {
         ChatRequest {
@@ -348,6 +365,7 @@ impl ChatRequestBuilder {
                 stop_sequences: self.stop_sequences,
             },
             response_format: self.response_format,
+            extended_thinking_budget: self.extended_thinking_budget,
         }
     }
 }
