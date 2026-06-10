@@ -281,13 +281,15 @@ pub(crate) fn to_anthropic(
 
     let params = req.params();
 
-    // Convert thinking config.
+    // Convert thinking config: ext.thinking overrides req.extended_thinking_budget.
     let thinking = ext
         .thinking
         .as_ref()
-        .map(|t| super::schema::AnthropicThinkingConfig {
+        .map(|t| t.budget_tokens)
+        .or_else(|| req.extended_thinking_budget())
+        .map(|budget| super::schema::AnthropicThinkingConfig {
             r#type: "enabled".into(),
-            budget_tokens: Some(t.budget_tokens),
+            budget_tokens: Some(budget),
         });
 
     // Convert metadata.
