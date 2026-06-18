@@ -97,3 +97,46 @@ async fn stream_tool_call_collects_invocation() {
     assert_eq!(invocations.len(), 1);
     assert_eq!(invocations[0].name, "get_weather");
 }
+
+#[tokio::test]
+async fn stream_signature_preserved_in_reasoning_block() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_stream(
+        &server,
+        include_str!("fixtures/anthropic/stream_simple.txt"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("deepseek-v4-flash", 256)
+        .message(Message::User(vec![RequestContent::Text(
+            "Count from one to three.".into(),
+        )]))
+        .build();
+
+    let handle = provider(&server).chat_stream(&req).await.unwrap();
+    let resp = handle.collect().await.unwrap();
+
+    // The fixture has a thinking block with signature_delta.
+    // Verify the signature propagated through to the response.
+    let reasoning_blocks: Vec<_> = resp
+        .content
+        .iter()
+        .filter_map(|c| {
+            if let ResponseContent::Reasoning { text: _, signature } = c {
+                Some(signature.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert!(
+        !reasoning_blocks.is_empty(),
+        "expected at least one reasoning block"
+    );
+    assert_eq!(
+        reasoning_blocks[0],
+        Some("862aad5394484928855530328e82e357".to_string()),
+        "Reasoning block signature should be preserved from signature_delta in stream"
+    );
+}

@@ -64,11 +64,13 @@ impl StreamHandle {
     ///   (streaming responses from most providers do not include an ID).
     /// - The `model` field is populated from the initial request, not
     ///   from the provider's stream response.
-    /// - `Reasoning.signature` will always be `None` (streaming responses
-    ///   from Anthropic cannot preserve thinking signatures).
+    /// - `Reasoning.signature` is populated from `ContentStop.signature` events;
+    ///   only Anthropic streaming responses provide this field.
     pub async fn collect(mut self) -> Result<ChatResponse, LlmError> {
         let mut text_blocks: HashMap<usize, String> = HashMap::new();
         let mut reasoning_blocks: HashMap<usize, String> = HashMap::new();
+        // Anthropic reasoning block signatures, keyed by block index.
+        let mut reasoning_signatures: HashMap<usize, String> = HashMap::new();
         // index → (id, name)
         let mut tool_starts: HashMap<usize, (String, String)> = HashMap::new();
         let mut tool_args: HashMap<usize, String> = HashMap::new();
@@ -98,7 +100,11 @@ impl StreamHandle {
                 StreamEvent::ToolDelta { index, arguments } => {
                     tool_args.entry(index).or_default().push_str(&arguments);
                 }
-                StreamEvent::ContentStop { .. } => {}
+                StreamEvent::ContentStop { index, signature } => {
+                    if let Some(sig) = signature {
+                        reasoning_signatures.insert(index, sig);
+                    }
+                }
                 StreamEvent::MessageStop {
                     stop_reason: sr,
                     usage: u,
@@ -115,11 +121,12 @@ impl StreamHandle {
             all.push((idx, ResponseContent::Text(text)));
         }
         for (idx, text) in reasoning_blocks {
+            let sig = reasoning_signatures.remove(&idx);
             all.push((
                 idx,
                 ResponseContent::Reasoning {
                     text,
-                    signature: None,
+                    signature: sig,
                 },
             ));
         }

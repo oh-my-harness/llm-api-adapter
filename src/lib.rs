@@ -111,7 +111,10 @@ mod tests {
             index: 0,
             text: "hi".into(),
         };
-        let _stop = StreamEvent::ContentStop { index: 0 };
+        let _stop = StreamEvent::ContentStop {
+            index: 0,
+            signature: None,
+        };
         let _msg_stop = StreamEvent::MessageStop {
             stop_reason: StopReason::EndTurn,
             usage: Usage::default(),

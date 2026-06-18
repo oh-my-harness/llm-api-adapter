@@ -78,7 +78,10 @@ pub fn process_chunk(
     // here once usage arrives.
     if let Some(usage) = chunk.usage {
         for &idx in &state.open_blocks {
-            events.push(Ok(StreamEvent::ContentStop { index: idx }));
+            events.push(Ok(StreamEvent::ContentStop {
+                index: idx,
+                signature: None,
+            }));
         }
         state.open_blocks.clear();
 
@@ -106,7 +109,10 @@ fn process_delta(
         if state.text_index.is_some() {
             // This shouldn't happen in normal flow, but handle it
             let text_idx = state.text_index.unwrap();
-            events.push(Ok(StreamEvent::ContentStop { index: text_idx }));
+            events.push(Ok(StreamEvent::ContentStop {
+                index: text_idx,
+                signature: None,
+            }));
             state.open_blocks.retain(|&x| x != text_idx);
             state.text_index = None;
         }
@@ -137,6 +143,7 @@ fn process_delta(
         if let Some(reasoning_idx) = state.reasoning_index {
             events.push(Ok(StreamEvent::ContentStop {
                 index: reasoning_idx,
+                signature: None,
             }));
             state.open_blocks.retain(|&x| x != reasoning_idx);
             state.reasoning_index = None;
