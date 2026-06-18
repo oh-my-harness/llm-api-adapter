@@ -43,7 +43,12 @@ pub enum StreamEvent {
     /// Fragments should be concatenated to build the full arguments JSON.
     ToolDelta { index: usize, arguments: String },
     /// A content block has finished.
-    ContentStop { index: usize },
+    ContentStop {
+        index: usize,
+        /// Anthropic-specific reasoning block signature (if provided by the provider).
+        /// `None` for text/tool blocks or non-Anthropic providers.
+        signature: Option<String>,
+    },
     /// The full message has finished; carries final stop reason and token usage.
     /// No further events follow this one.
     MessageStop {

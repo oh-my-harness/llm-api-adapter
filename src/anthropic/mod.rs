@@ -24,10 +24,10 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 ///
 /// # Limitations
 ///
-/// Only non-streaming responses preserve thinking signatures. Streaming responses
-/// ([`chat_stream_native()`](AnthropicProvider::chat_stream_native)) produce `Reasoning`
-/// blocks with `signature: None`, and are therefore **not** suitable for multi-turn
-/// extended thinking. Use `chat_native()` when you need signature round-trips.
+/// `redacted_thinking` blocks carry an encrypted `data` field on the wire. The non-streaming
+/// path encodes it as `[redacted_thinking: {data}]` text inside a `Reasoning` block, but the
+/// streaming path does not surface `data` at all — a streamed `redacted_thinking` arrives as
+/// an empty `Reasoning { text: "", signature: None }` and cannot be round-tripped.
 pub struct AnthropicNativeResponse {
     inner: ChatResponse,
 }
@@ -199,10 +199,12 @@ impl AnthropicProvider {
 
     /// Chat completion using the native Anthropic path (streaming).
     ///
-    /// **Limitation:** Streaming responses cannot preserve thinking signatures.
-    /// The resulting `StreamHandle` will produce `Reasoning { signature: None }`,
-    /// making it unsuitable for multi-turn extended thinking.  Use
-    /// [`chat_native()`](Self::chat_native) when you need signature round-trips.
+    /// Thinking-block signatures are preserved through the streaming path:
+    /// `signature_delta` events are accumulated and surfaced via
+    /// [`StreamEvent::ContentStop`](crate::types::StreamEvent::ContentStop), then folded
+    /// back into `Reasoning { signature }` by [`StreamHandle::collect()`]. `redacted_thinking`
+    /// blocks remain a limitation — their encrypted `data` is not surfaced on this path, so
+    /// they cannot be round-tripped.
     pub async fn chat_stream_native(
         &self,
         req: &AnthropicRequest,
