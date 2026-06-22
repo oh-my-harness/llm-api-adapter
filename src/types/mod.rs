@@ -1,9 +1,11 @@
 mod content;
+mod embedding;
 mod message;
 mod request;
 mod response;
 mod stream;
 pub use content::*;
+pub use embedding::*;
 pub use message::*;
 pub use request::*;
 pub use response::*;

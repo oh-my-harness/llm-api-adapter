@@ -126,6 +126,7 @@ impl AnthropicProvider {
                 images: true,
                 reasoning: true,
                 json_schema: false,
+                embeddings: false,
             },
         }
     }

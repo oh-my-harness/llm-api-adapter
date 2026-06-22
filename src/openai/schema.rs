@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::types::{EmbeddingRequest, EmbeddingResponse, EmbeddingUsage, EmbeddingVector};
+
 // ── Request ──────────────────────────────────────────────────────────────────
 
 /// OpenAI Chat Completions API request.
@@ -203,6 +205,83 @@ pub(crate) struct OaiCompletionTokensDetails {
     /// Tokens consumed by internal reasoning (o-series / GPT-5).
     #[serde(default)]
     pub reasoning_tokens: u32,
+}
+
+// ── Embeddings ────────────────────────────────────────────────────────────────
+
+/// OpenAI Embeddings API request.
+#[derive(Debug, Serialize)]
+pub(crate) struct OaiEmbeddingRequest {
+    /// Model identifier (e.g., "text-embedding-3-small").
+    pub model: String,
+    /// Batched text input.
+    pub input: Vec<String>,
+    /// Optional output dimensionality for models that support it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<usize>,
+    /// Optional encoding format hint ("float" or "base64").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoding_format: Option<String>,
+}
+
+impl From<&EmbeddingRequest> for OaiEmbeddingRequest {
+    fn from(req: &EmbeddingRequest) -> Self {
+        Self {
+            model: req.model().to_string(),
+            input: req.input().to_vec(),
+            dimensions: req.dimensions(),
+            encoding_format: req.encoding_format().map(str::to_string),
+        }
+    }
+}
+
+/// OpenAI Embeddings API response.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct OaiEmbeddingResponse {
+    /// Model used.
+    pub model: String,
+    /// Embedding data.
+    #[serde(default)]
+    pub data: Vec<OaiEmbeddingData>,
+    /// Token usage information.
+    #[serde(default)]
+    pub usage: Option<OaiEmbeddingUsage>,
+}
+
+/// One embedding vector in an OpenAI embeddings response.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct OaiEmbeddingData {
+    /// Dense floating-point embedding.
+    pub embedding: Vec<f32>,
+    /// Position of the input item in the request batch.
+    pub index: usize,
+}
+
+/// Token usage statistics for OpenAI embeddings.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct OaiEmbeddingUsage {
+    pub prompt_tokens: u32,
+    pub total_tokens: u32,
+}
+
+impl From<OaiEmbeddingResponse> for EmbeddingResponse {
+    fn from(resp: OaiEmbeddingResponse) -> Self {
+        Self {
+            model: resp.model,
+            vectors: resp
+                .data
+                .into_iter()
+                .map(|item| EmbeddingVector {
+                    index: item.index,
+                    embedding: item.embedding,
+                })
+                .collect(),
+            usage: resp.usage.map(|usage| EmbeddingUsage {
+                input_tokens: usage.prompt_tokens,
+                total_tokens: usage.total_tokens,
+            }),
+        }
+    }
 }
 
 // ── Streaming ─────────────────────────────────────────────────────────────────

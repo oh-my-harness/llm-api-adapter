@@ -27,6 +27,7 @@ pub fn client(api_key: impl Into<String>) -> OpenAIProvider {
             images: false,
             reasoning: true,
             json_schema: true,
+            embeddings: false,
         })
         .build()
 }

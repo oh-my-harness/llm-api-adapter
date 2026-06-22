@@ -7,7 +7,7 @@ pub mod stream_handle;
 pub mod types;
 
 pub use error::LlmError;
-pub use provider::{Provider, ProviderCapabilities};
+pub use provider::{EmbeddingProvider, Provider, ProviderCapabilities};
 pub use stream_handle::StreamHandle;
 pub use types::*;
 
@@ -266,6 +266,7 @@ mod tests {
         assert!(caps.supports_images());
         assert!(caps.supports_reasoning());
         assert!(caps.supports_json_schema());
+        assert!(caps.supports_embeddings());
     }
 
     #[test]
@@ -275,6 +276,7 @@ mod tests {
         assert!(caps.supports_images());
         assert!(caps.supports_reasoning());
         assert!(!caps.supports_json_schema());
+        assert!(!caps.supports_embeddings());
     }
 
     #[test]
@@ -288,6 +290,7 @@ mod tests {
         );
         assert!(caps.supports_reasoning());
         assert!(caps.supports_json_schema());
+        assert!(!caps.supports_embeddings());
     }
 
     #[test]

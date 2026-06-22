@@ -18,6 +18,8 @@ pub struct ProviderCapabilities {
     /// Whether this provider supports JSON schema structured output via the
     /// canonical `ResponseFormat::JsonSchema` field on `ChatRequest`.
     pub json_schema: bool,
+    /// Whether this provider supports embedding requests.
+    pub embeddings: bool,
 }
 
 impl ProviderCapabilities {
@@ -27,6 +29,22 @@ impl ProviderCapabilities {
             images,
             reasoning,
             json_schema,
+            embeddings: false,
+        }
+    }
+
+    /// Create a new `ProviderCapabilities` instance with embedding support.
+    pub fn with_embeddings(
+        images: bool,
+        reasoning: bool,
+        json_schema: bool,
+        embeddings: bool,
+    ) -> Self {
+        Self {
+            images,
+            reasoning,
+            json_schema,
+            embeddings,
         }
     }
 
@@ -44,6 +62,11 @@ impl ProviderCapabilities {
     /// on the canonical `ChatRequest`.
     pub fn supports_json_schema(&self) -> bool {
         self.json_schema
+    }
+
+    /// Returns `true` if this provider supports embedding requests.
+    pub fn supports_embeddings(&self) -> bool {
+        self.embeddings
     }
 }
 
@@ -93,4 +116,14 @@ pub trait Provider: Send + Sync {
     /// [`StreamHandle::collect()`] to fold the stream into a [`ChatResponse`].
     /// Note that `id` and `model` may be empty when collected from streaming.
     async fn chat_stream(&self, req: &ChatRequest) -> Result<StreamHandle, LlmError>;
+}
+
+/// Unified interface for providers that can generate embeddings.
+///
+/// This trait is separate from [`Provider`] so existing chat-only providers and
+/// trait objects remain focused on chat/streaming behavior.
+#[async_trait]
+pub trait EmbeddingProvider: Send + Sync {
+    /// Generate embeddings for the request input batch.
+    async fn embed(&self, req: &EmbeddingRequest) -> Result<EmbeddingResponse, LlmError>;
 }

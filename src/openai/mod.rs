@@ -4,12 +4,18 @@ pub(crate) mod stream;
 
 pub use convert::{OpenAIExt, OpenAIExtBuilder, OpenAIRequest};
 
-use crate::{error::LlmError, provider::Provider, stream_handle::StreamHandle, types::*};
+use crate::{
+    error::LlmError,
+    provider::{EmbeddingProvider, Provider},
+    stream_handle::StreamHandle,
+    types::*,
+};
 use async_trait::async_trait;
 use std::time::Duration;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 const DEFAULT_CHAT_PATH: &str = "/v1/chat/completions";
+const DEFAULT_EMBEDDINGS_PATH: &str = "/v1/embeddings";
 
 /// OpenAI (and OpenAI-compatible) provider implementation.
 ///
@@ -28,6 +34,7 @@ pub struct OpenAIProvider {
     api_key: String,
     base_url: String,
     chat_path: String,
+    embeddings_path: String,
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
     capabilities: crate::provider::ProviderCapabilities,
@@ -41,6 +48,7 @@ pub struct OpenAIProviderBuilder {
     api_key: String,
     base_url: String,
     chat_path: String,
+    embeddings_path: String,
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
     capabilities: crate::provider::ProviderCapabilities,
@@ -64,12 +72,14 @@ impl OpenAIProvider {
             api_key: api_key.into(),
             base_url: DEFAULT_BASE_URL.to_string(),
             chat_path: DEFAULT_CHAT_PATH.to_string(),
+            embeddings_path: DEFAULT_EMBEDDINGS_PATH.to_string(),
             parse_reasoning_content: false,
             tolerant_keepalive: false,
             capabilities: crate::provider::ProviderCapabilities {
                 images: true,
                 reasoning: true,
                 json_schema: true,
+                embeddings: true,
             },
         }
     }
@@ -127,6 +137,48 @@ impl OpenAIProvider {
         Ok(response)
     }
 
+    /// Send an embeddings request to the OpenAI-compatible embeddings endpoint.
+    async fn send_embeddings(
+        &self,
+        req: &schema::OaiEmbeddingRequest,
+    ) -> Result<reqwest::Response, LlmError> {
+        let url = format!(
+            "{}{}",
+            self.base_url.trim_end_matches('/'),
+            self.embeddings_path
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(req)
+            .send()
+            .await?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let retry_after = extract_retry_after_header(response.headers());
+            let error_text = response.text().await?;
+
+            return match status.as_u16() {
+                401 => Err(LlmError::Unauthorized),
+                403 => Err(LlmError::Forbidden),
+                402 => Err(LlmError::Provider {
+                    code: "payment_required".into(),
+                    message: error_text,
+                }),
+                429 => Err(LlmError::RateLimit { retry_after }),
+                500 | 502 | 503 => Err(LlmError::ServerError(error_text)),
+                529 => Err(LlmError::Overloaded { retry_after }),
+                _ => Err(LlmError::InvalidRequest(error_text)),
+            };
+        }
+
+        Ok(response)
+    }
+
     /// Chat completion using the native OpenAI path (non-streaming).
     ///
     /// Accepts `OpenAIRequest` (a `ChatRequest` paired with `OpenAIExt`) so
@@ -157,6 +209,17 @@ impl OpenAIProvider {
         let tolerant = req.ext.tolerant_keepalive || self.tolerant_keepalive;
         let stream = stream::parse_stream(response, req.ext.parse_reasoning_content, tolerant);
         Ok(StreamHandle::new(model, stream))
+    }
+
+    /// Generate embeddings using the native OpenAI-compatible embeddings API.
+    pub async fn embed_native(
+        &self,
+        req: &EmbeddingRequest,
+    ) -> Result<EmbeddingResponse, LlmError> {
+        let oai_req = schema::OaiEmbeddingRequest::from(req);
+        let response = self.send_embeddings(&oai_req).await?;
+        let oai_resp = response.json::<schema::OaiEmbeddingResponse>().await?;
+        Ok(oai_resp.into())
     }
 }
 
@@ -199,6 +262,13 @@ impl OpenAIProviderBuilder {
         self
     }
 
+    /// Override the embeddings path appended to `base_url`
+    /// (default: "/v1/embeddings").
+    pub fn embeddings_path(mut self, path: impl Into<String>) -> Self {
+        self.embeddings_path = path.into();
+        self
+    }
+
     /// Enable parsing of DeepSeek reasoning_content from responses.
     pub fn parse_reasoning_content(mut self, v: bool) -> Self {
         self.parse_reasoning_content = v;
@@ -227,6 +297,7 @@ impl OpenAIProviderBuilder {
             api_key: self.api_key,
             base_url: self.base_url,
             chat_path: self.chat_path,
+            embeddings_path: self.embeddings_path,
             parse_reasoning_content: self.parse_reasoning_content,
             tolerant_keepalive: self.tolerant_keepalive,
             capabilities: self.capabilities,
@@ -260,5 +331,12 @@ impl Provider for OpenAIProvider {
             },
         };
         self.chat_stream_native(&oai_req).await
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for OpenAIProvider {
+    async fn embed(&self, req: &EmbeddingRequest) -> Result<EmbeddingResponse, LlmError> {
+        self.embed_native(req).await
     }
 }
