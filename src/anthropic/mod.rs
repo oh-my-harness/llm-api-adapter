@@ -202,7 +202,7 @@ impl AnthropicProvider {
     ///
     /// Thinking-block signatures are preserved through the streaming path:
     /// `signature_delta` events are accumulated and surfaced via
-    /// [`StreamEvent::ContentStop`](crate::types::StreamEvent::ContentStop), then folded
+    /// [`StreamEvent::ContentStop`], then folded
     /// back into `Reasoning { signature }` by [`StreamHandle::collect()`]. `redacted_thinking`
     /// blocks remain a limitation — their encrypted `data` is not surfaced on this path, so
     /// they cannot be round-tripped.
