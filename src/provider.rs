@@ -1,8 +1,4 @@
-use crate::{
-    error::{LlmError, SearchError},
-    stream_handle::StreamHandle,
-    types::*,
-};
+use crate::{error::LlmError, stream_handle::StreamHandle, types::*};
 use async_trait::async_trait;
 
 /// Runtime-queryable capability flags for a provider.
@@ -130,11 +126,4 @@ pub trait Provider: Send + Sync {
 pub trait EmbeddingProvider: Send + Sync {
     /// Generate embeddings for the request input batch.
     async fn embed(&self, req: &EmbeddingRequest) -> Result<EmbeddingResponse, LlmError>;
-}
-
-/// Unified interface for providers that can perform web search.
-#[async_trait]
-pub trait SearchProvider: Send + Sync {
-    /// Search the web and return normalized results.
-    async fn search(&self, req: &SearchRequest) -> Result<SearchResponse, SearchError>;
 }
