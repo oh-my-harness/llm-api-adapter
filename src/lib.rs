@@ -1,13 +1,14 @@
 pub mod anthropic;
 pub mod deepseek;
+pub mod duckduckgo;
 mod error;
 pub mod openai;
 pub mod provider;
 pub mod stream_handle;
 pub mod types;
 
-pub use error::LlmError;
-pub use provider::{EmbeddingProvider, Provider, ProviderCapabilities};
+pub use error::{LlmError, SearchError};
+pub use provider::{EmbeddingProvider, Provider, ProviderCapabilities, SearchProvider};
 pub use stream_handle::StreamHandle;
 pub use types::*;
 
@@ -136,6 +137,11 @@ mod tests {
     #[test]
     fn anthropic_provider_builds() {
         let _p = anthropic::AnthropicProvider::builder("test-key").build();
+    }
+
+    #[test]
+    fn duckduckgo_search_provider_builds() {
+        let _p = duckduckgo::DuckDuckGoSearchProvider::builder().build();
     }
 
     #[test]
