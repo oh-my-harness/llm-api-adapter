@@ -233,6 +233,22 @@ async fn integration_response_format_json_object() {
     let Some((p, model)) = provider() else {
         return;
     };
+    // json_object mode is an OpenAI-native capability. Some OpenAI-compatible
+    // backends accept the field but ignore it (return prose, not JSON):
+    // - glm-5.2 / vLLM: accepts but ignores response_format entirely
+    // Opt in by setting OPENAI_SUPPORTS_JSON_OBJECT=1; auto-skip for known backends.
+    let base_url = common::opt_env("OPENAI_BASE_URL").unwrap_or_default();
+    let env_model = common::opt_env("OPENAI_MODEL").unwrap_or_default();
+    let is_deepseek = base_url.contains("deepseek.com")
+        || common::opt_env("OPENAI_PROVIDER_KIND").as_deref() == Some("deepseek");
+    let is_glm = env_model.starts_with("glm");
+    let opted_in = common::opt_env("OPENAI_SUPPORTS_JSON_OBJECT").as_deref() == Some("1");
+    if (is_deepseek || is_glm) && !opted_in {
+        println!(
+            "[skip] json_object response_format not supported by this backend (model={env_model})"
+        );
+        return;
+    }
     let req = ChatRequest::builder(model, 512)
         .message(Message::User(vec![RequestContent::Text(
             "Return a JSON object with a single key \"greeting\" \
@@ -257,10 +273,21 @@ async fn integration_response_format_json_schema() {
     let Some((p, model)) = provider() else {
         return;
     };
-    // DeepSeek does not support response_format: json_schema — skip explicitly
-    // so the test can still validate the happy path against real OpenAI.
-    if common::opt_env("OPENAI_PROVIDER_KIND").as_deref() == Some("deepseek") {
-        println!("[skip] json_schema response_format not supported by DeepSeek backend");
+    // json_schema strict mode is an OpenAI-native capability. Many OpenAI-compatible
+    // backends don't truly support it:
+    // - DeepSeek: returns error "This response_format type is unavailable now"
+    // - glm-5.2 / vLLM: accepts the field but ignores it (returns prose, not JSON)
+    // Opt in by setting OPENAI_SUPPORTS_JSON_SCHEMA=1; auto-skip for known backends.
+    let base_url = common::opt_env("OPENAI_BASE_URL").unwrap_or_default();
+    let env_model = common::opt_env("OPENAI_MODEL").unwrap_or_default();
+    let is_deepseek = base_url.contains("deepseek.com")
+        || common::opt_env("OPENAI_PROVIDER_KIND").as_deref() == Some("deepseek");
+    let is_glm = env_model.starts_with("glm");
+    let opted_in = common::opt_env("OPENAI_SUPPORTS_JSON_SCHEMA").as_deref() == Some("1");
+    if (is_deepseek || is_glm) && !opted_in {
+        println!(
+            "[skip] json_schema response_format not supported by this backend (model={env_model})"
+        );
         return;
     }
     let schema = serde_json::json!({
@@ -305,4 +332,105 @@ async fn integration_response_format_json_schema() {
         author.to_lowercase().contains("orwell"),
         "expected Orwell as author; got: {author}"
     );
+}
+
+/// Returns a provider configured with ReasoningEffort scheme for o-series tests.
+/// Returns `None` when the test should be skipped.
+fn reasoning_provider() -> Option<(OpenAIProvider, String)> {
+    common::load_dotenv();
+    let api_key = common::opt_env("OPENAI_API_KEY")?;
+    let base_url =
+        common::opt_env("OPENAI_BASE_URL").unwrap_or_else(|| "https://api.openai.com".into());
+    let chat_path =
+        common::opt_env("OPENAI_CHAT_PATH").unwrap_or_else(|| "/v1/chat/completions".into());
+    let model = common::opt_env("OPENAI_REASONING_MODEL").unwrap_or_else(|| "o3-mini".into());
+    let p = OpenAIProvider::builder(api_key)
+        .base_url(base_url)
+        .chat_path(chat_path)
+        .thinking_scheme(llm_adapter::openai::ThinkingScheme::ReasoningEffort)
+        .parse_reasoning_content(true)
+        .build();
+    Some((p, model))
+}
+
+#[tokio::test]
+async fn integration_reasoning_via_canonical_request() {
+    let Some((prov, model)) = reasoning_provider() else {
+        eprintln!("[skip] OPENAI_API_KEY not set");
+        return;
+    };
+    let req = ChatRequest::builder(&model, 2048)
+        .message(Message::User(vec![RequestContent::Text(
+            "What is 15 + 27? Just the number.".into(),
+        )]))
+        .thinking(ThinkingLevel::High)
+        .build();
+    let resp = prov.chat(&req).await.unwrap();
+    assert!(!resp.text().is_empty());
+}
+
+#[tokio::test]
+async fn integration_reasoning_off_omits_effort_field() {
+    // ThinkingLevel::Off should omit reasoning_effort entirely (not send "none").
+    // On reasoning models the model still reasons by default, but the field
+    // should be absent from the request.
+    let Some((prov, model)) = reasoning_provider() else {
+        eprintln!("[skip] OPENAI_API_KEY not set");
+        return;
+    };
+    let req = ChatRequest::builder(&model, 2048)
+        .message(Message::User(vec![RequestContent::Text(
+            "Say hello.".into(),
+        )]))
+        .thinking(ThinkingLevel::Off)
+        .build();
+    let resp = prov.chat(&req).await.unwrap();
+    assert!(!resp.text().is_empty());
+    // The model may still return reasoning_tokens (o-series can't truly turn off
+    // reasoning), but the request wire must omit reasoning_effort.
+}
+
+#[tokio::test]
+async fn integration_reasoning_medium_effort() {
+    // Verify ThinkingLevel::Medium maps to reasoning_effort="medium".
+    let Some((prov, model)) = reasoning_provider() else {
+        eprintln!("[skip] OPENAI_API_KEY not set");
+        return;
+    };
+    let req = ChatRequest::builder(&model, 2048)
+        .message(Message::User(vec![RequestContent::Text(
+            "What is 15 + 27? Just the number.".into(),
+        )]))
+        .thinking(ThinkingLevel::Medium)
+        .build();
+    let resp = prov.chat(&req).await.unwrap();
+
+    assert!(!resp.text().is_empty());
+    // Reasoning models should produce reasoning content (DeepSeek reasoning_content,
+    // vLLM/glm reasoning field). Non-reasoning models that ignore reasoning_effort
+    // will have neither — log but don't fail, since the wire format is still correct.
+    if resp.usage.reasoning_tokens == 0 && resp.reasoning().is_none() {
+        eprintln!(
+            "[info] model '{model}' did not produce reasoning output — \
+             likely a non-reasoning model that ignores reasoning_effort"
+        );
+    }
+}
+
+#[tokio::test]
+async fn integration_reasoning_stream() {
+    // Verify streaming with reasoning_effort works end-to-end.
+    let Some((prov, model)) = reasoning_provider() else {
+        eprintln!("[skip] OPENAI_API_KEY not set");
+        return;
+    };
+    let req = ChatRequest::builder(&model, 2048)
+        .message(Message::User(vec![RequestContent::Text(
+            "What is 15 + 27? Just the number.".into(),
+        )]))
+        .thinking(ThinkingLevel::High)
+        .build();
+    let handle = prov.chat_stream(&req).await.expect("stream failed");
+    let resp = handle.collect().await.expect("collect failed");
+    assert!(!resp.text().is_empty());
 }

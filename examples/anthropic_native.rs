@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ext = AnthropicExt::builder()
         .top_k(40)
-        .thinking(ThinkingConfig {
+        .thinking(ThinkingConfig::Budget {
             budget_tokens: 1000,
         })
         .metadata(AnthropicMetadata {

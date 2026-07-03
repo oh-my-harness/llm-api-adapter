@@ -37,6 +37,7 @@ fn provider() -> Option<(OpenAIProvider, String)> {
             .base_url(base)
             .parse_reasoning_content(true)
             .tolerant_keepalive(true)
+            .thinking_scheme(llm_adapter::openai::ThinkingScheme::ThinkingToggle)
             .build()
     } else {
         deepseek::client(api_key)
@@ -383,4 +384,177 @@ async fn integration_response_format_json_schema() {
     // DeepSeek V4 does not support response_format: json_schema.
     // json_schema is tested in integration_openai.rs against a compatible backend.
     println!("[skip] json_schema response_format not supported by DeepSeek V4");
+}
+
+#[tokio::test]
+async fn integration_thinking_via_canonical_request() {
+    let Some((prov, model)) = provider() else {
+        eprintln!("[skip] DEEPSEEK_API_KEY not set");
+        return;
+    };
+    let req = ChatRequest::builder(&model, 2048)
+        .message(Message::User(vec![RequestContent::Text(
+            "What is 7 times 8? Just the number.".into(),
+        )]))
+        .thinking(ThinkingLevel::High)
+        .build();
+    let resp = prov.chat(&req).await.unwrap();
+    // Thinking enabled → reasoning_content should be present.
+    assert!(resp.reasoning().is_some());
+    assert!(!resp.text().is_empty());
+}
+
+#[tokio::test]
+async fn integration_thinking_off_via_canonical_request() {
+    let Some((prov, model)) = provider() else {
+        eprintln!("[skip] DEEPSEEK_API_KEY not set");
+        return;
+    };
+    let req = ChatRequest::builder(&model, 2048)
+        .message(Message::User(vec![RequestContent::Text(
+            "What is 7 times 8? Just the number.".into(),
+        )]))
+        .thinking(ThinkingLevel::Off)
+        .build();
+    let resp = prov.chat(&req).await.unwrap();
+    // Thinking explicitly disabled → no reasoning_content.
+    assert!(resp.reasoning().is_none());
+}
+
+#[tokio::test]
+async fn integration_thinking_low_effort_maps_to_high() {
+    // DeepSeek only supports "high" and "max". ThinkingLevel::Low should be
+    // downgraded to reasoning_effort="high" (not "low"), and thinking stays on.
+    let Some((prov, model)) = provider() else {
+        eprintln!("[skip] DEEPSEEK_API_KEY not set");
+        return;
+    };
+    let req = ChatRequest::builder(&model, 2048)
+        .message(Message::User(vec![RequestContent::Text(
+            "What is 7 times 8? Just the number.".into(),
+        )]))
+        .thinking(ThinkingLevel::Low)
+        .build();
+    let resp = prov.chat(&req).await.unwrap();
+    // Low still enables thinking → reasoning_content present.
+    assert!(
+        resp.reasoning().is_some(),
+        "expected reasoning content for Low"
+    );
+    assert!(!resp.text().is_empty());
+}
+
+#[tokio::test]
+async fn integration_thinking_xhigh_effort_maps_to_max() {
+    // ThinkingLevel::XHigh should be mapped to reasoning_effort="max".
+    let Some((prov, model)) = provider() else {
+        eprintln!("[skip] DEEPSEEK_API_KEY not set");
+        return;
+    };
+    let req = ChatRequest::builder(&model, 4096)
+        .message(Message::User(vec![RequestContent::Text(
+            "What is 15 + 27? Just the number.".into(),
+        )]))
+        .thinking(ThinkingLevel::XHigh)
+        .build();
+    let resp = prov.chat(&req).await.unwrap();
+    assert!(
+        resp.reasoning().is_some(),
+        "expected reasoning content for XHigh"
+    );
+    assert!(!resp.text().is_empty());
+}
+
+#[tokio::test]
+async fn integration_thinking_enabled_rejects_tool_choice_required() {
+    // DeepSeek V4 rejects tool_choice=Required while thinking is enabled.
+    // This documents the documented API constraint.
+    let Some((prov, model)) = provider() else {
+        eprintln!("[skip] DEEPSEEK_API_KEY not set");
+        return;
+    };
+    let req = ChatRequest::builder(&model, 2048)
+        .message(Message::User(vec![RequestContent::Text(
+            "What's the weather in Paris?".into(),
+        )]))
+        .tool(weather_tool())
+        .tool_choice(ToolChoice::Required)
+        .thinking(ThinkingLevel::High)
+        .build();
+    let result = prov.chat(&req).await;
+    assert!(
+        result.is_err(),
+        "expected error when tool_choice=Required + thinking enabled"
+    );
+    let err = result.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("400") || msg.contains("invalid") || msg.contains("tool"),
+        "expected 400/invalid/tool error, got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn integration_thinking_stream_reasoning_precedes_text() {
+    // In thinking mode, reasoning_content arrives before content in the stream.
+    let Some((prov, model)) = provider() else {
+        eprintln!("[skip] DEEPSEEK_API_KEY not set");
+        return;
+    };
+    let req = ChatRequest::builder(&model, 2048)
+        .message(Message::User(vec![RequestContent::Text(
+            "What is 7 times 8? Just the number.".into(),
+        )]))
+        .thinking(ThinkingLevel::High)
+        .build();
+    let handle = prov.chat_stream(&req).await.expect("stream failed");
+    let resp = handle.collect().await.expect("collect failed");
+    assert!(
+        resp.reasoning().is_some(),
+        "expected reasoning content in stream"
+    );
+    assert!(!resp.text().is_empty());
+    // Reasoning block must precede text block in canonical order.
+    let reasoning_idx = resp
+        .content
+        .iter()
+        .position(|c| matches!(c, ResponseContent::Reasoning { .. }))
+        .expect("reasoning block missing");
+    let text_idx = resp
+        .content
+        .iter()
+        .position(|c| matches!(c, ResponseContent::Text(_)))
+        .expect("text block missing");
+    assert!(reasoning_idx < text_idx, "reasoning must precede text");
+}
+
+#[tokio::test]
+async fn integration_thinking_off_then_on_via_canonical() {
+    // Verify toggle round-trip: Off → no reasoning, then High → reasoning.
+    let Some((prov, model)) = provider() else {
+        eprintln!("[skip] DEEPSEEK_API_KEY not set");
+        return;
+    };
+    // Turn 1: thinking off.
+    let req_off = ChatRequest::builder(&model, 2048)
+        .message(Message::User(vec![RequestContent::Text(
+            "Say hello.".into(),
+        )]))
+        .thinking(ThinkingLevel::Off)
+        .build();
+    let resp_off = prov.chat(&req_off).await.unwrap();
+    assert!(
+        resp_off.reasoning().is_none(),
+        "Off should disable thinking"
+    );
+
+    // Turn 2: thinking on — independent request, not a multi-turn.
+    let req_on = ChatRequest::builder(&model, 2048)
+        .message(Message::User(vec![RequestContent::Text(
+            "What is 7 times 8? Just the number.".into(),
+        )]))
+        .thinking(ThinkingLevel::High)
+        .build();
+    let resp_on = prov.chat(&req_on).await.unwrap();
+    assert!(resp_on.reasoning().is_some(), "High should enable thinking");
 }

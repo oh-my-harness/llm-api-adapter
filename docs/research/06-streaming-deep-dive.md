@@ -248,9 +248,9 @@ delta 的 type 决定了字段名：
 
 ---
 
-## 5. DeepSeek 流式：OpenAI + reasoning_content 扩展
+## 5. DeepSeek / vLLM 流式：OpenAI + reasoning 扩展
 
-DeepSeek 走 OpenAI 协议，但 delta 里多一个字段：
+DeepSeek 和 vLLM 后端（glm-5.2 等）走 OpenAI 协议，但 delta 里多一个推理字段：
 
 ```
 data: {"id":"...","choices":[{"index":0,"delta":{"reasoning_content":"Let me think..."},"finish_reason":null}]}
@@ -269,9 +269,10 @@ data: [DONE]
 ### 关键观察
 
 1. **reasoning_content 先到，content 后到**，两者不交错
-2. delta 同时只会有一个：要么 `reasoning_content` 要么 `content`（不会同 chunk 给两个）
+2. delta 同时只会有一个：要么推理字段要么 `content`（不会同 chunk 给两个）
 3. 累加规则同 OpenAI：字符串拼接
 4. **高负载下大量出现 `:` keep-alive 注释行**，要跳过
+5. **字段名差异**：DeepSeek 用 `reasoning_content`，vLLM/glm 用 `reasoning`。适配层用 `serde(alias = "reasoning")` 统一解析
 
 ### 累加伪代码
 
@@ -355,19 +356,20 @@ data: {"index":1}
 
 ### 7.1 OpenAI（Chat Completions 路径）
 
-- **完全不暴露**。`reasoning_effort: "high"` 只控制思考强度，思考内容**不返回**（只是会被算进 output tokens 计费）
+- **完全不暴露思考内容**。`reasoning_effort: "high"` 只控制思考强度，思考内容**不返回**
+- 但 `usage.completion_tokens_details.reasoning_tokens` 会返回推理 token 计数，映射到 canonical `usage.reasoning_tokens`
+- o 系列 / GPT-5.x 推理是模型原生架构，无法真正关闭——省略 `reasoning_effort` 只是用默认 effort，要完全关闭需切非推理模型
 - Responses API 才有 `reasoning` item 类型，但仍然加密或只给 summary
 
-### 7.2 DeepSeek
-
-- 思考模式下，**明文返回**思考内容（`reasoning_content`）
-- 流式时**先把 reasoning_content 全部推完，再开始推 content**
-- 思考可达 32K token，**这段时间客户端只看到 reasoning_content 在长**，主答案要等很久才开始
+- 思考模式下，**明文返回**思考内容（DeepSeek 字段名 `reasoning_content`，vLLM/glm 字段名 `reasoning`）
+- 流式时**先把推理内容全部推完，再开始推 content**
+- 思考可达 32K token，**这段时间客户端只看到推理内容在长**，主答案要等很久才开始
 - 调用方做 UI 时要分两栏（推理过程 / 最终回答），不能塞进同一个文本流
 
 ### 7.3 Anthropic（Extended Thinking）
 
-- 启用 `"thinking": {"type": "enabled", "budget_tokens": N}` 才有
+- **4.6 模型**：`"thinking": {"type": "enabled", "budget_tokens": N}`（min 1024，已 deprecated）
+- **4.7+ 模型**（Opus 4.7 / Mythos）：`"thinking": {"type": "adaptive", "effort": "standard"|"aggressive"}`（不支持 budget_tokens，传了 400）
 - 思考是**独立的 content block**（`type: "thinking"`），和 text block / tool_use block 并列在 content[] 数组里
 - 流式时：
 
@@ -390,6 +392,8 @@ data: {"index":1,"content_block":{"type":"text","text":""}}
 ```
 
 `signature_delta` 是 thinking 块结束时给出的**签名**。多轮对话回传 thinking 块时**必须保留 signature**，否则模型拒绝处理（防伪）。
+
+**Usage 中的 thinking_tokens**：流式 `message_delta` 事件携带 `usage.output_tokens_details.thinking_tokens`，映射到 canonical `usage.reasoning_tokens`。适配层在 `MessageStop` 时从 `message_delta` 合并 `output_tokens_details`（`message_start` 的 usage 不含 thinking_tokens）。
 
 ---
 

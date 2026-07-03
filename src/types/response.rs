@@ -31,7 +31,7 @@ pub enum StopReason {
 /// | `output_tokens` | Yes | Yes | Yes |
 /// | `cached_input_tokens` | Yes | Yes | Yes |
 /// | `cache_creation_input_tokens` | No | Yes | No |
-/// | `reasoning_tokens` | No | No | Yes |
+/// | `reasoning_tokens` | Yes (o-series) | Yes (thinking) | Yes (thinking) |
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Usage {
     /// Tokens in the prompt (input / request).
@@ -43,8 +43,10 @@ pub struct Usage {
     pub cached_input_tokens: u32,
     /// Tokens written to the Anthropic prompt cache. Always 0 for OpenAI and DeepSeek.
     pub cache_creation_input_tokens: u32,
-    /// Reasoning tokens consumed in DeepSeek thinking mode. Always 0 for OpenAI
-    /// and Anthropic.
+    /// Reasoning/thinking tokens consumed. Populated by OpenAI o-series
+    /// (`completion_tokens_details.reasoning_tokens`), Anthropic extended
+    /// thinking (`output_tokens_details.thinking_tokens`), and DeepSeek
+    /// thinking mode. Always 0 for non-reasoning models.
     pub reasoning_tokens: u32,
 }
 

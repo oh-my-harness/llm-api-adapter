@@ -11,11 +11,35 @@ use crate::{
     types::*,
 };
 use async_trait::async_trait;
+use std::borrow::Cow;
 use std::time::Duration;
 
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 const DEFAULT_CHAT_PATH: &str = "/v1/chat/completions";
 const DEFAULT_EMBEDDINGS_PATH: &str = "/v1/embeddings";
+
+/// How [`ChatRequest::thinking`](crate::types::ChatRequest::thinking) (a
+/// [`ThinkingLevel`](crate::types::ThinkingLevel)) is translated to
+/// OpenAI-compatible wire format on this provider.
+///
+/// This is the **provider-side translation strategy** — distinct from
+/// `ThinkingLevel` (the canonical intensity level set on `ChatRequest`).
+/// `ThinkingLevel` says *what* intensity you want; `ThinkingScheme` says
+/// *how* the OpenAI-compatible provider translates it to wire format.
+///
+/// Default: `None` (no translation — `ThinkingLevel` is ignored, only
+/// `OpenAIExt.reasoning_effort` / `extra_body` take effect). Use
+/// `deepseek::client()` factory for automatic `ThinkingToggle` configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThinkingScheme {
+    /// Do not translate `thinking` (legacy). Only `OpenAIExt` fields take effect.
+    #[default]
+    None,
+    /// Standard OpenAI: `thinking` → top-level `reasoning_effort` string.
+    ReasoningEffort,
+    /// DeepSeek-style: `thinking` → `extra_body.thinking` object + top-level `reasoning_effort`.
+    ThinkingToggle,
+}
 
 /// OpenAI (and OpenAI-compatible) provider implementation.
 ///
@@ -37,6 +61,7 @@ pub struct OpenAIProvider {
     embeddings_path: String,
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
+    thinking_scheme: ThinkingScheme,
     capabilities: crate::provider::ProviderCapabilities,
 }
 
@@ -51,6 +76,7 @@ pub struct OpenAIProviderBuilder {
     embeddings_path: String,
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
+    thinking_scheme: ThinkingScheme,
     capabilities: crate::provider::ProviderCapabilities,
 }
 
@@ -75,6 +101,7 @@ impl OpenAIProvider {
             embeddings_path: DEFAULT_EMBEDDINGS_PATH.to_string(),
             parse_reasoning_content: false,
             tolerant_keepalive: false,
+            thinking_scheme: ThinkingScheme::None,
             capabilities: crate::provider::ProviderCapabilities {
                 images: true,
                 reasoning: true,
@@ -186,10 +213,9 @@ impl OpenAIProvider {
     /// `reasoning_effort`, `extra_body`, etc. — without sacrificing the
     /// type-safe canonical request shape.
     pub async fn chat_native(&self, req: &OpenAIRequest) -> Result<ChatResponse, LlmError> {
-        let oai_req = convert::to_oai(&req.base, Some(&req.ext), false)?;
-        let response = self
-            .send(&oai_req, req.ext.extra_body.as_ref(), false)
-            .await?;
+        let oai_req = convert::to_oai(&req.base, Some(&req.ext), self.thinking_scheme, false)?;
+        let extra_body = self.resolve_extra_body(&req.ext.extra_body, req.base.thinking())?;
+        let response = self.send(&oai_req, extra_body.as_deref(), false).await?;
         let oai_resp = response.json::<schema::OaiResponse>().await?;
         convert::from_oai(oai_resp, req.ext.parse_reasoning_content)
     }
@@ -198,19 +224,15 @@ impl OpenAIProvider {
     ///
     /// Accepts `OpenAIRequest` (a `ChatRequest` paired with `OpenAIExt`) so
     /// callers can use provider-specific streaming extensions.
-    /// Returns a [`StreamHandle`] that
-    /// yields incremental [`StreamEvent`] values.
     pub async fn chat_stream_native(&self, req: &OpenAIRequest) -> Result<StreamHandle, LlmError> {
-        let oai_req = convert::to_oai(&req.base, Some(&req.ext), true)?;
-        let response = self
-            .send(&oai_req, req.ext.extra_body.as_ref(), true)
-            .await?;
+        let oai_req = convert::to_oai(&req.base, Some(&req.ext), self.thinking_scheme, true)?;
+        let extra_body = self.resolve_extra_body(&req.ext.extra_body, req.base.thinking())?;
+        let response = self.send(&oai_req, extra_body.as_deref(), true).await?;
         let model = oai_req.model.clone();
         let tolerant = req.ext.tolerant_keepalive || self.tolerant_keepalive;
         let stream = stream::parse_stream(response, req.ext.parse_reasoning_content, tolerant);
         Ok(StreamHandle::new(model, stream))
     }
-
     /// Generate embeddings using the native OpenAI-compatible embeddings API.
     pub async fn embed_native(
         &self,
@@ -220,6 +242,51 @@ impl OpenAIProvider {
         let response = self.send_embeddings(&oai_req).await?;
         let oai_resp = response.json::<schema::OaiEmbeddingResponse>().await?;
         Ok(oai_resp.into())
+    }
+
+    /// Build a DeepSeek-style `thinking` extra_body from `ChatRequest.thinking`.
+    ///
+    /// Returns `None` when scheme is not `ThinkingToggle` or `thinking` is
+    /// `None`. Returns `Some({"thinking":{"type":"disabled"}})` for
+    /// `ThinkingLevel::Off`.
+    ///
+    /// Only the `thinking` toggle object is produced here; the `reasoning_effort`
+    /// string is emitted as a top-level field by `to_oai` (via the
+    /// `OaiRequest.reasoning_effort` field), matching DeepSeek's wire format
+    /// where `reasoning_effort` is top-level and `thinking` only carries `type`.
+    fn build_thinking_body(
+        &self,
+        thinking: Option<crate::types::ThinkingLevel>,
+    ) -> Option<serde_json::Value> {
+        if self.thinking_scheme != ThinkingScheme::ThinkingToggle {
+            return None;
+        }
+        let spec = thinking?;
+        Some(match spec {
+            crate::types::ThinkingLevel::Off => serde_json::json!({
+                "thinking": {"type": "disabled"}
+            }),
+            _ => serde_json::json!({
+                "thinking": {"type": "enabled"}
+            }),
+        })
+    }
+
+    /// Resolve the final `extra_body` to send, merging scheme-derived
+    /// thinking body when present. Returns a borrow when no thinking body
+    /// is produced (the common default-scheme path), avoiding a clone of
+    /// the caller's `extra_body`. Returns `None` when there is nothing to
+    /// send (no caller extra_body and no scheme-derived thinking body).
+    fn resolve_extra_body<'a>(
+        &self,
+        caller_extra: &'a Option<serde_json::Value>,
+        thinking: Option<crate::types::ThinkingLevel>,
+    ) -> Result<Option<Cow<'a, serde_json::Value>>, LlmError> {
+        let thinking_body = self.build_thinking_body(thinking);
+        match thinking_body {
+            None => Ok(caller_extra.as_ref().map(Cow::Borrowed)),
+            Some(t) => merge_thinking_into_extra(caller_extra, t).map(|v| v.map(Cow::Owned)),
+        }
     }
 }
 
@@ -244,6 +311,39 @@ fn merge_extra_body(
         }
     }
     Ok(serde_json::to_string(&body)?)
+}
+
+/// Merge scheme-derived thinking body into caller's extra_body.
+///
+/// Caller's extra_body takes precedence (its `thinking` key wins).
+/// Returns `Err(InvalidRequest)` if `caller_extra` is present but not a JSON
+/// object (consistent with [`merge_extra_body`]).
+fn merge_thinking_into_extra(
+    caller_extra: &Option<serde_json::Value>,
+    thinking_body: serde_json::Value,
+) -> Result<Option<serde_json::Value>, LlmError> {
+    match caller_extra {
+        None => Ok(Some(thinking_body)),
+        Some(caller) => {
+            // If caller already has a `thinking` key, caller wins — return caller as-is.
+            if caller.get("thinking").is_some() {
+                return Ok(Some(caller.clone()));
+            }
+            // Otherwise merge thinking keys into caller. Caller must be an object.
+            caller.as_object().ok_or_else(|| {
+                LlmError::InvalidRequest("OpenAIExt.extra_body must be a JSON object".into())
+            })?;
+            let mut merged = caller.clone();
+            if let Some(merged_obj) = merged.as_object_mut()
+                && let Some(think_obj) = thinking_body.as_object()
+            {
+                for (k, v) in think_obj {
+                    merged_obj.insert(k.clone(), v.clone());
+                }
+            }
+            Ok(Some(merged))
+        }
+    }
 }
 
 impl OpenAIProviderBuilder {
@@ -287,6 +387,13 @@ impl OpenAIProviderBuilder {
         self
     }
 
+    /// Configure how `ChatRequest.thinking` is translated to wire format.
+    /// Default: `ThinkingScheme::None`.
+    pub fn thinking_scheme(mut self, scheme: ThinkingScheme) -> Self {
+        self.thinking_scheme = scheme;
+        self
+    }
+
     /// Build the OpenAIProvider instance.
     pub fn build(self) -> OpenAIProvider {
         OpenAIProvider {
@@ -298,6 +405,7 @@ impl OpenAIProviderBuilder {
             base_url: self.base_url,
             chat_path: self.chat_path,
             embeddings_path: self.embeddings_path,
+            thinking_scheme: self.thinking_scheme,
             parse_reasoning_content: self.parse_reasoning_content,
             tolerant_keepalive: self.tolerant_keepalive,
             capabilities: self.capabilities,

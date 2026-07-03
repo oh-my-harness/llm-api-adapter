@@ -1,6 +1,6 @@
 # LLM Adapter 研究笔记 - 索引
 
-> **更新日期：** 2026-06-02
+> **更新日期：** 2026-07-03
 > **范围：** OpenAI + Anthropic + DeepSeek 当前主力 API
 > **目的：** 为 Rust 适配层设计提供归一化依据，不是完整 API 手册
 
@@ -17,7 +17,7 @@
 
 ## 信息来源（按权重）
 
-笔记内容基于 2026-06-02 的网络搜索结果。WebFetch 直连官方文档被网络策略拦截，所以引用的是经过搜索引擎索引和聚合的二手内容。**所有内容在设计冻结前需要回到官方文档复核：**
+> 笔记内容最初基于 2026-06-02 的网络搜索结果。2026-07-03 根据 OpenAI 官方 Reasoning models 文档、Anthropic 官方 Extended thinking 文档、DeepSeek 官方 Thinking Mode 文档进行了复核和修正。
 
 **OpenAI 官方入口**
 - API Reference：`platform.openai.com/docs/api-reference`（或 `developers.openai.com/api/reference`）

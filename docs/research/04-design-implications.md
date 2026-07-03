@@ -19,7 +19,7 @@
 
 - ❌ Streaming text 之外的复杂 content（embedding / image-gen / TTS）
 - ❌ Prompt Caching 的**主动**触发能力（Anthropic 的 `cache_control` 块标记 —— 可作 P2）
-- ❌ Structured Output / JSON Schema 强约束
+- ✅ Structured Output（`response_format: json_object` + `json_schema`，OpenAI 原生；DeepSeek 仅 `json_object`）
 - ❌ Multiple completions（n>1）
 - ❌ Logprobs
 - ❌ Hosted tools / server-side tools
@@ -72,7 +72,7 @@ struct ChatRequest {
     tools: Vec<ToolDef>,
     tool_choice: ToolChoice,
     params: SamplingParams,
-    thinking: Option<ThinkingConfig>,    // 控制是否启用思考及 budget
+    thinking: Option<ThinkingLevel>,    // 控制思考强度（Off/Minimal/Low/Medium/High/XHigh/Budget）
     cache_hints: Vec<CacheHint>,          // Anthropic 用，其他家忽略
 }
 ```
@@ -107,9 +107,21 @@ struct SamplingParams {
     disable_parallel_tools: bool,
 }
 
-struct ThinkingConfig {
-    enabled: bool,
-    budget_tokens: Option<u32>,  // Anthropic 需要；DeepSeek 用模型名 / extra_body 控制
+/// 通用思考强度枚举（canonical path），各 provider 转换为自身 wire 格式。
+enum ThinkingLevel {
+    Off,        // 省略 thinking 字段（DeepSeek 注入 {type:"disabled"}）
+    Minimal,    // OAI: "minimal" | Anthropic adaptive: standard
+    Low,        // OAI: "low"     | DeepSeek: "high" | Anthropic adaptive: standard
+    Medium,     // OAI: "medium"  | DeepSeek: "high" | Anthropic adaptive: standard
+    High,       // OAI: "high"    | DeepSeek: "high" | Anthropic adaptive: aggressive
+    XHigh,      // OAI: "xhigh"   | DeepSeek: "max"  | Anthropic adaptive: aggressive
+    Budget(u32),// Anthropic 4.6: budget_tokens | 4.7+: degrades to aggressive
+}
+
+/// Anthropic 原生 path 的思考配置（显式选择 4.6 budget 或 4.7+ adaptive）。
+enum ThinkingConfig {
+    Budget { budget_tokens: u32 },          // 4.6: {type:"enabled", budget_tokens}
+    Adaptive { effort: String },            // 4.7+: {type:"adaptive", effort:"standard"|"aggressive"}
 }
 
 struct CacheHint {
@@ -173,7 +185,12 @@ enum LlmError {
 ```rust
 struct Usage {
     input_tokens: u32,
-    output_tokens: u32,
+    /// 推理 token 数。来源：
+    ///   OpenAI o-series: completion_tokens_details.reasoning_tokens
+    ///   Anthropic thinking: output_tokens_details.thinking_tokens
+    ///   DeepSeek: 计入 completion_tokens（无独立字段，置 0 或从 usage 推算）
+    ///   vLLM/glm: 计入 completion_tokens（reasoning 字段不产独立计数）
+    reasoning_tokens: u32,
 
     /// 缓存命中的输入 token 数。三家映射：
     ///   OpenAI: usage.prompt_tokens_details.cached_tokens
@@ -184,12 +201,6 @@ struct Usage {
     /// Anthropic 独有：写入缓存的 token 数（计费比正常 input 高）
     /// OpenAI / DeepSeek 此字段为 0
     cache_creation_input_tokens: u32,
-
-    /// 推理 token 数。来源：
-    ///   OpenAI o-series: 隐式扣减自 output_tokens（不单独暴露，置 0）
-    ///   Anthropic thinking: 算入 output_tokens
-    ///   DeepSeek: 单独计费，可单独累加
-    reasoning_tokens: u32,
 }
 ```
 
@@ -209,10 +220,12 @@ struct OpenAIProvider {
 }
 
 struct ProtocolFlags {
-    /// 解析 delta.reasoning_content（DeepSeek、Doubao 等都用）
+    /// 解析 reasoning_content / reasoning 字段（DeepSeek、vLLM/glm 等）
     parse_reasoning_content: bool,
     /// 容忍大量 `:` keep-alive 注释行（DeepSeek 思考模式排队时常见）
     tolerant_keepalive: bool,
+    /// 思考控制方式：None | ReasoningEffort（OpenAI o-series）| ThinkingToggle（DeepSeek）
+    thinking_scheme: ThinkingScheme,
 }
 ```
 
@@ -230,6 +243,7 @@ let deepseek = OpenAIProvider::builder()
     .base_url("https://api.deepseek.com")
     .parse_reasoning_content(true)
     .tolerant_keepalive(true)
+    .thinking_scheme(ThinkingScheme::ThinkingToggle)
     .build();
 
 // 或者用便利工厂封装
@@ -242,11 +256,11 @@ let deepseek = DeepSeek::client(env::var("DEEPSEEK_API_KEY"));
 ```rust
 pub mod deepseek {
     pub fn client(api_key: impl Into<String>) -> OpenAIProvider {
-        OpenAIProvider::builder()
-            .api_key(api_key)
+        OpenAIProvider::builder(api_key)
             .base_url("https://api.deepseek.com")
             .parse_reasoning_content(true)
             .tolerant_keepalive(true)
+            .thinking_scheme(ThinkingScheme::ThinkingToggle)
             .build()
     }
 }

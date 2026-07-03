@@ -42,7 +42,7 @@
   "stream": false,
   "stream_options": {"include_usage": true},
   "response_format": {"type": "text"} | {"type": "json_object"} | {"type": "json_schema", "json_schema": {...}},
-  "reasoning_effort": "none" | "low" | "medium" | "high" | "minimal" | "xhigh",
+  "reasoning_effort": "none" | "minimal" | "low" | "medium" | "high" | "xhigh",
   "logprobs": false,
   "top_logprobs": 5,
   "prompt_cache_retention": "24h",
@@ -111,7 +111,8 @@
     "prompt_tokens": 100,
     "completion_tokens": 50,
     "total_tokens": 150,
-    "prompt_tokens_details": {"cached_tokens": 0}
+    "prompt_tokens_details": {"cached_tokens": 0},
+    "completion_tokens_details": {"reasoning_tokens": 0}
   },
   "system_fingerprint": "fp_xxx"
 }
@@ -218,9 +219,11 @@ for chunk in stream:
 **特殊约束：**
 - o1 系列**不支持 streaming**
 - o1 系列**不支持 system message**（用 user 代替）
+- **o 系列 / GPT-5.x 推理是模型原生架构，无法真正关闭**——省略 `reasoning_effort` 只是用默认 effort（gpt-5.5 默认 medium），要完全关闭推理需切换到非推理模型（如 gpt-4o）
+- `reasoning_effort: "none"` 仅表示最小化推理（latency-critical 场景），不是关闭
+- `reasoning_effort` 支持值因模型而异，部分模型仅支持子集（查 model page 确认）
 - GPT-5.4+ 在 Chat Completions 下 `reasoning: none` 时不支持 tool calling
 - 部分老模型不支持 `parallel_tool_calls`
-
 ---
 
 ## 7. Responses API 新增能力（暂不展开，留待第二版）

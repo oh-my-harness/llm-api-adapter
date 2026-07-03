@@ -303,3 +303,95 @@ async fn extra_body_rejects_non_object() {
         err
     );
 }
+
+#[tokio::test]
+async fn thinking_reasoning_effort_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_reasoning.json")).await;
+
+    let prov = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .thinking_scheme(llm_adapter::openai::ThinkingScheme::ReasoningEffort)
+        .build();
+
+    let req = ChatRequest::builder("o3-mini", 512)
+        .message(Message::User(vec![RequestContent::Text("Think.".into())]))
+        .thinking(ThinkingLevel::Medium)
+        .build();
+
+    prov.chat(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    assert!(!received.is_empty());
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["reasoning_effort"], "medium");
+}
+
+#[tokio::test]
+async fn thinking_off_omits_reasoning_effort() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_simple.json")).await;
+
+    let prov = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .thinking_scheme(llm_adapter::openai::ThinkingScheme::ReasoningEffort)
+        .build();
+
+    let req = ChatRequest::builder("o3-mini", 512)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .thinking(ThinkingLevel::Off)
+        .build();
+
+    prov.chat(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert!(body.get("reasoning_effort").is_none());
+}
+
+#[tokio::test]
+async fn thinking_toggle_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_reasoning.json")).await;
+
+    let prov = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .thinking_scheme(llm_adapter::openai::ThinkingScheme::ThinkingToggle)
+        .build();
+
+    let req = ChatRequest::builder("deepseek-v4-pro", 512)
+        .message(Message::User(vec![RequestContent::Text("Think.".into())]))
+        .thinking(ThinkingLevel::High)
+        .build();
+
+    prov.chat(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    assert!(!received.is_empty());
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["thinking"]["type"], "enabled");
+    // reasoning_effort is top-level, not inside thinking object
+    assert_eq!(body["reasoning_effort"], "high");
+}
+
+#[tokio::test]
+async fn thinking_toggle_off_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_simple.json")).await;
+
+    let prov = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .thinking_scheme(llm_adapter::openai::ThinkingScheme::ThinkingToggle)
+        .build();
+
+    let req = ChatRequest::builder("deepseek-v4-pro", 512)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .thinking(ThinkingLevel::Off)
+        .build();
+
+    prov.chat(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["thinking"]["type"], "disabled");
+}

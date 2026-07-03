@@ -76,8 +76,9 @@ pub(crate) struct OaiMessage {
     /// Tool call ID (for tool role responses).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
-    /// DeepSeek reasoning content (present when parse_reasoning_content is enabled).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Reasoning content from thinking models (DeepSeek `reasoning_content`,
+    /// vLLM/glm `reasoning`). Present when `parse_reasoning_content` is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "reasoning")]
     pub reasoning_content: Option<String>,
 }
 
@@ -322,8 +323,8 @@ pub(crate) struct OaiDelta {
     /// Tool call deltas.
     #[serde(default)]
     pub tool_calls: Vec<OaiStreamToolCall>,
-    /// DeepSeek reasoning content delta.
-    #[serde(default)]
+    /// Reasoning content delta (DeepSeek `reasoning_content`, vLLM/glm `reasoning`).
+    #[serde(default, alias = "reasoning")]
     pub reasoning_content: Option<String>,
 }
 

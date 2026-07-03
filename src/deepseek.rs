@@ -2,14 +2,13 @@ use crate::{openai::OpenAIProvider, provider::ProviderCapabilities};
 
 const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 
-/// Create an [`OpenAIProvider`] pre-configured for the DeepSeek API.
-///
 /// DeepSeek uses the OpenAI Chat Completions schema at a different base URL,
 /// with `reasoning_content` parsing and tolerant keepalive enabled for
 /// thinking-mode models.
 ///
-/// Capabilities: reasoning ✓, json_schema ✓, images ✗
-/// (DeepSeek V3/V4 do not accept image input; see integration test
+/// Capabilities: reasoning ✓, json_schema ✗ (DeepSeek does not support
+/// `response_format: json_schema` — use `json_object` or strict tool use),
+/// images ✗ (DeepSeek V3/V4 do not accept image input; see integration test
 /// `integration_image_input_returns_error` for verification.)
 ///
 /// # Example
@@ -23,10 +22,11 @@ pub fn client(api_key: impl Into<String>) -> OpenAIProvider {
         .base_url(DEEPSEEK_BASE_URL)
         .parse_reasoning_content(true)
         .tolerant_keepalive(true)
+        .thinking_scheme(crate::openai::ThinkingScheme::ThinkingToggle)
         .capabilities(ProviderCapabilities {
             images: false,
             reasoning: true,
-            json_schema: true,
+            json_schema: false,
             embeddings: false,
         })
         .build()

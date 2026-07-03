@@ -10,6 +10,57 @@ use super::schema::{
     OaiTool, OaiToolCall, OaiToolCallFunction, OaiUsage,
 };
 
+use crate::types::ThinkingLevel;
+
+/// Map a [`ThinkingLevel`] to the OpenAI `reasoning_effort` string.
+///
+/// Returns `None` for [`ThinkingLevel::Off`] (meaning: omit the field entirely,
+/// so the model uses its default effort). Note: on OpenAI o-series / GPT-5.x
+/// reasoning models, reasoning is built into the architecture and cannot be
+/// truly "turned off" — setting `Off` only avoids specifying an effort level.
+/// To fully disable reasoning, switch to a non-reasoning model (e.g. gpt-4o).
+///
+/// [`ThinkingLevel::Budget`] is interval-mapped to one of the 5 discrete levels.
+pub(crate) fn thinking_to_oai_effort(spec: ThinkingLevel) -> Option<String> {
+    match spec {
+        ThinkingLevel::Off => None,
+        ThinkingLevel::Minimal => Some("minimal".into()),
+        ThinkingLevel::Low => Some("low".into()),
+        ThinkingLevel::Medium => Some("medium".into()),
+        ThinkingLevel::High => Some("high".into()),
+        ThinkingLevel::XHigh => Some("xhigh".into()),
+        ThinkingLevel::Budget(n) => Some(
+            if n <= 2048 {
+                "minimal"
+            } else if n <= 4096 {
+                "low"
+            } else if n <= 8192 {
+                "medium"
+            } else if n <= 16384 {
+                "high"
+            } else {
+                "xhigh"
+            }
+            .into(),
+        ),
+    }
+}
+
+/// Map a [`ThinkingLevel`] to the DeepSeek `reasoning_effort` string.
+///
+/// DeepSeek only supports `"high"` and `"max"` — per official docs, `low` and
+/// `medium` are mapped to `"high"`, and `xhigh` is mapped to `"max"`.
+/// Returns `None` for [`ThinkingLevel::Off`] (omit the field).
+pub(crate) fn thinking_to_deepseek_effort(spec: ThinkingLevel) -> Option<String> {
+    match spec {
+        ThinkingLevel::Off => None,
+        ThinkingLevel::XHigh => Some("max".into()),
+        ThinkingLevel::Budget(n) => Some(if n > 8192 { "max" } else { "high" }.into()),
+        // Minimal, Low, Medium, High all map to "high" per DeepSeek docs.
+        _ => Some("high".into()),
+    }
+}
+
 // ── OpenAIExt ────────────────────────────────────────────────────────────────
 
 /// Provider-specific extensions for OpenAI requests.
@@ -179,6 +230,7 @@ fn response_format_to_oai(fmt: &crate::types::ResponseFormat) -> serde_json::Val
 pub(crate) fn to_oai(
     req: &ChatRequest,
     ext: Option<&OpenAIExt>,
+    scheme: super::ThinkingScheme,
     stream: bool,
 ) -> Result<OaiRequest, LlmError> {
     let default_ext = OpenAIExt::default();
@@ -211,7 +263,6 @@ pub(crate) fn to_oai(
     } else {
         Some(tool_choice_to_oai(req.tool_choice()))
     };
-
     let params = req.params();
 
     Ok(OaiRequest {
@@ -224,6 +275,15 @@ pub(crate) fn to_oai(
         top_p: params.top_p(),
         stop: params.stop_sequences().to_vec(),
         stream,
+        reasoning_effort: ext.reasoning_effort.clone().or_else(|| {
+            if scheme == super::ThinkingScheme::ReasoningEffort {
+                req.thinking().and_then(thinking_to_oai_effort)
+            } else if scheme == super::ThinkingScheme::ThinkingToggle {
+                req.thinking().and_then(thinking_to_deepseek_effort)
+            } else {
+                None
+            }
+        }),
         stream_options: if stream {
             Some(super::schema::OaiStreamOptions {
                 include_usage: true,
@@ -235,7 +295,6 @@ pub(crate) fn to_oai(
         frequency_penalty: ext.frequency_penalty,
         presence_penalty: ext.presence_penalty,
         user: ext.user.clone(),
-        reasoning_effort: ext.reasoning_effort.clone(),
         response_format: req.response_format().map(response_format_to_oai),
     })
 }
@@ -517,7 +576,7 @@ mod tests {
             )]))
             .response_format(ResponseFormat::JsonObject)
             .build();
-        let oai = to_oai(&req, None, false).unwrap();
+        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false).unwrap();
         let body = serde_json::to_value(&oai).unwrap();
         assert_eq!(body["response_format"]["type"], "json_object");
     }
@@ -536,7 +595,7 @@ mod tests {
                 strict: Some(true),
             })
             .build();
-        let oai = to_oai(&req, None, false).unwrap();
+        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false).unwrap();
         let body = serde_json::to_value(&oai).unwrap();
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(body["response_format"]["json_schema"]["name"], "out");
@@ -554,8 +613,59 @@ mod tests {
                 "hi".into(),
             )]))
             .build();
-        let oai = to_oai(&req, None, false).unwrap();
+        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false).unwrap();
         let body = serde_json::to_value(&oai).unwrap();
         assert!(body.get("response_format").is_none() || body["response_format"].is_null());
+    }
+
+    #[test]
+    fn oai_effort_mapping() {
+        use crate::types::ThinkingLevel;
+        assert_eq!(thinking_to_oai_effort(ThinkingLevel::Off), None);
+        assert_eq!(
+            thinking_to_oai_effort(ThinkingLevel::Minimal).as_deref(),
+            Some("minimal")
+        );
+        assert_eq!(
+            thinking_to_oai_effort(ThinkingLevel::Low).as_deref(),
+            Some("low")
+        );
+        assert_eq!(
+            thinking_to_oai_effort(ThinkingLevel::Medium).as_deref(),
+            Some("medium")
+        );
+        assert_eq!(
+            thinking_to_oai_effort(ThinkingLevel::High).as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            thinking_to_oai_effort(ThinkingLevel::XHigh).as_deref(),
+            Some("xhigh")
+        );
+    }
+
+    #[test]
+    fn oai_effort_budget_boundaries() {
+        use crate::types::ThinkingLevel;
+        assert_eq!(
+            thinking_to_oai_effort(ThinkingLevel::Budget(2048)).as_deref(),
+            Some("minimal")
+        );
+        assert_eq!(
+            thinking_to_oai_effort(ThinkingLevel::Budget(2049)).as_deref(),
+            Some("low")
+        );
+        assert_eq!(
+            thinking_to_oai_effort(ThinkingLevel::Budget(4097)).as_deref(),
+            Some("medium")
+        );
+        assert_eq!(
+            thinking_to_oai_effort(ThinkingLevel::Budget(8193)).as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            thinking_to_oai_effort(ThinkingLevel::Budget(16385)).as_deref(),
+            Some("xhigh")
+        );
     }
 }

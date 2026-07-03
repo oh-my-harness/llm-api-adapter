@@ -174,7 +174,7 @@ mod tests {
             .message(Message::User(vec![RequestContent::Text("Hi".into())]))
             .temperature(0.5)
             .build();
-        let oai = to_oai(&req, None, false).unwrap();
+        let oai = to_oai(&req, None, openai::ThinkingScheme::None, false).unwrap();
         assert_eq!(oai.model, "gpt-4o");
         assert_eq!(oai.max_tokens, 512);
         assert_eq!(oai.temperature, Some(0.5));
@@ -289,7 +289,10 @@ mod tests {
             "DeepSeek V3/Flash does not support images"
         );
         assert!(caps.supports_reasoning());
-        assert!(caps.supports_json_schema());
+        assert!(
+            !caps.supports_json_schema(),
+            "DeepSeek does not support json_schema response_format"
+        );
         assert!(!caps.supports_embeddings());
     }
 

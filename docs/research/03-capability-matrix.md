@@ -90,15 +90,18 @@ api.openai.com    api.deepseek.com    api.anthropic.com    api.deepseek.com/anth
 
 | 维度 | OpenAI | Anthropic | DeepSeek |
 |---|---|---|---|
-| 启用方式 | `reasoning_effort: "low/medium/high/..."`（仅 o 系列、GPT-5） | `thinking: {type:"enabled", budget_tokens: N}` | `extra_body={"thinking": {"type":"enabled"}}` 或选 `-reasoner` 模型 |
-| 思考内容暴露 | **不暴露**（Chat Completions） | 显式 `thinking` content block，含明文 | **明文返回**于 `reasoning_content` 字段 |
+| 启用方式 | 顶层 `reasoning_effort: "none"\|"minimal"\|"low"\|"medium"\|"high"\|"xhigh"`（仅 o 系列、GPT-5.x） | `thinking: {type:"enabled", budget_tokens: N}` (4.6) 或 `thinking: {type:"adaptive", effort: "standard"\|"aggressive"}` (4.7+) | 顶层 `reasoning_effort: "high"\|"max"` + `extra_body={"thinking": {"type":"enabled"}}`；或选 `deepseek-reasoner` 模型 |
+| 关闭方式 | 省略 `reasoning_effort`（o 系列仍默认推理，无法真正关闭，需切普通模型） | 省略 `thinking` 字段 | `extra_body={"thinking": {"type":"disabled"}}` |
+| Effort 降级 | n/a（原生支持全部档位） | 4.7+ 仅 standard/aggressive 两档 | `low`/`medium` → `high`，`xhigh` → `max`（官方降级规则） |
+| 思考内容暴露 | **不暴露**（Chat Completions） | 显式 `thinking` content block，含明文 + signature | **明文返回**于 `reasoning_content` 字段 |
+| `display` 控制 | n/a | `"summarized"`（返回思考文本，4.6 默认）/ `"omitted"`（仅返回签名，4.7+ 默认） | n/a |
 | 加密版本 | Responses API 的 encrypted reasoning（ZDR） | `redacted_thinking` block | ❌ |
 | 跨轮保留 | 用 `previous_response_id` 或回传加密 token | 回传 thinking block 时**必须保留 signature** | V4：无 tool 调用可省；**有 tool 调用必须回传 reasoning_content**，否则 400 |
 | 与 tool use 共存 | GPT-5.4+ Chat Completions 下 `reasoning:none` 不支持 tool | 启用 thinking 时 tool_choice 仅支持 auto/none | 支持，但要正确回喂 reasoning_content |
-| 思考时不支持的参数 | 各模型不同（o1 不支持 system） | temperature/top_p/top_k 失效 | temperature/top_p/penalty/logprobs **被忽略**（不报错） |
-| 思考预算上限 | reasoning_effort 控制 | `budget_tokens` | reasoning_content 可达 32K，**不计入 64K 上下文** |
-| 计费 | 算作 output token | 算作 output token | 算作 output token（独立计数） |
-
+| 思考时不支持的参数 | 各模型不同（o1 不支持 system） | temperature/top_p/top_k 被忽略（不报错）；top_p 仅允许 0.95~1 | temperature/top_p/penalty/logprobs **被忽略**（不报错） |
+| 思考预算上限 | reasoning_effort 控制 | `budget_tokens`（4.6，min 1024）；4.7+ adaptive 无 budget | reasoning_content 可达 32K，**不计入 64K 上下文** |
+| Usage thinking token | `completion_tokens_details.reasoning_tokens` | `output_tokens_details.thinking_tokens` | 计入 `completion_tokens`（无独立字段） |
+| 计费 | 算作 output token | 算作 output token（含 thinking + text） | 算作 output token（独立计数） |
 ---
 
 ## 5. 多模态输入
@@ -170,7 +173,7 @@ api.openai.com    api.deepseek.com    api.anthropic.com    api.deepseek.com/anth
 | 能力 | OpenAI | Anthropic | DeepSeek | 第一版建议 |
 |---|---|---|---|---|
 | 显式 Prompt caching | ❌（自动） | ✅ `cache_control` | ❌（自动） | Anthropic 暴露 `CacheHint`，其他家自动 |
-| Structured Output | `response_format: json_schema` + strict | 无对应（靠 tool use 间接实现） | 同 OpenAI（兼容） | 暂不归一化，作 OpenAI/DeepSeek 专属 |
+| Structured Output | `response_format: json_schema` + strict | 无对应（靠 tool use 间接实现） | ❌ 不支持 `json_schema`，仅 `json_object`；可用 tool `strict:true` 迂回 | OpenAI 专属；DeepSeek 降级为 `json_object` 或 tool 迂回 |
 | 服务端状态 | Responses API `previous_response_id` | ❌ | ❌ | 不做 |
 | 内置 hosted 工具 | web_search / file_search / computer_use / code_interpreter | computer_use / web_search / code_execution | ❌ | 不做（属于上层 agent 关注） |
 | Logprobs | ✅ | ❌ | ✅（思考模式下被忽略） | 不做 |

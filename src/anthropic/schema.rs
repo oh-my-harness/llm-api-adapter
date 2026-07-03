@@ -123,11 +123,14 @@ pub(crate) struct AnthropicCacheControl {
 /// Extended thinking configuration.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct AnthropicThinkingConfig {
-    /// Thinking type (e.g., "enabled").
+    /// Thinking type: `"enabled"` (4.6, budget_tokens) or `"adaptive"` (4.7+).
     pub r#type: String,
-    /// Maximum tokens to spend on thinking.
+    /// Maximum tokens to spend on thinking (4.6 only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u32>,
+    /// Effort level (4.7+ only): `"standard"` or `"aggressive"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// Metadata about the request.
@@ -215,6 +218,17 @@ pub(crate) struct AnthropicUsage {
     /// Tokens read from cache.
     #[serde(default)]
     pub cache_read_input_tokens: u32,
+    /// Breakdown of output tokens (includes thinking_tokens when thinking is enabled).
+    #[serde(default)]
+    pub output_tokens_details: AnthropicOutputTokensDetails,
+}
+
+/// Output token breakdown.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct AnthropicOutputTokensDetails {
+    /// Number of output tokens spent on internal reasoning (thinking).
+    #[serde(default)]
+    pub thinking_tokens: u32,
 }
 
 // ── Streaming ─────────────────────────────────────────────────────────────────

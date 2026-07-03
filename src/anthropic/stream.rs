@@ -24,6 +24,8 @@ pub struct AnthropicStreamState {
     initial_message: Option<super::schema::AnthropicResponse>,
     /// Output tokens accumulated from message_delta events.
     output_tokens: u32,
+    /// Output token details (thinking_tokens) from message_delta events.
+    output_tokens_details: super::schema::AnthropicOutputTokensDetails,
     /// Pending stop reason from message_delta.
     pending_stop_reason: Option<String>,
 }
@@ -38,6 +40,7 @@ impl AnthropicStreamState {
             reasoning_signatures: HashMap::new(),
             initial_message: None,
             output_tokens: 0,
+            output_tokens_details: Default::default(),
             pending_stop_reason: None,
         }
     }
@@ -152,9 +155,10 @@ pub fn process_event(
         }
 
         AnthropicStreamEvent::MessageDelta { delta, usage } => {
-            // Store pending stop reason and update output_tokens.
+            // Store pending stop reason and update output_tokens + thinking_tokens.
             state.pending_stop_reason = delta.stop_reason;
             state.output_tokens = usage.output_tokens;
+            state.output_tokens_details = usage.output_tokens_details;
         }
 
         AnthropicStreamEvent::MessageStop => {
@@ -169,7 +173,8 @@ pub fn process_event(
             }
             state.open_blocks.clear();
 
-            // Build usage from initial_message with updated output_tokens.
+            // Build usage from initial_message with updated output_tokens and
+            // thinking_tokens from the final message_delta event.
             let usage =
                 state
                     .initial_message
@@ -177,6 +182,7 @@ pub fn process_event(
                     .map_or_else(crate::types::Usage::default, |msg| {
                         let mut u = msg.usage.clone();
                         u.output_tokens = state.output_tokens;
+                        u.output_tokens_details = state.output_tokens_details.clone();
                         anthropic_usage_to_canonical(u)
                     });
 
@@ -283,6 +289,7 @@ mod tests {
                     output_tokens: 0,
                     cache_creation_input_tokens: 0,
                     cache_read_input_tokens: 0,
+                    ..Default::default()
                 },
             },
         };
@@ -461,6 +468,7 @@ mod tests {
                     output_tokens: 0,
                     cache_creation_input_tokens: 3,
                     cache_read_input_tokens: 2,
+                    ..Default::default()
                 },
             },
         };
@@ -522,6 +530,7 @@ mod tests {
                 output_tokens: 50,
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 0,
+                ..Default::default()
             },
         };
         let e = process_event(&mut state, msg_delta);
@@ -629,6 +638,7 @@ mod tests {
                     output_tokens: 0,
                     cache_creation_input_tokens: 0,
                     cache_read_input_tokens: 0,
+                    ..Default::default()
                 },
             },
         };

@@ -41,9 +41,9 @@ To keep the surface area honest, this library deliberately does **not** do:
 
 | Provider | Universal path | Native extensions | Streaming | Tool calls | Reasoning | Structured output |
 |---|---|---|---|---|---|---|
-| OpenAI Chat Completions | ✅ | `OpenAIExt`: seed, penalties, `reasoning_effort`, `response_format`, `extra_body` | ✅ | ✅ | `reasoning_effort` (o-series / GPT-5) | ✅ (json_object, json_schema) |
-| DeepSeek (`api.deepseek.com`) | ✅ (factory `deepseek::client`) | `OpenAIExt` (e.g. `extra_body: {"thinking": {"type": "disabled"}}`) | ✅ | ✅ | `reasoning_content` parsed into `ResponseContent::Reasoning` | via `extra_body` |
-| Anthropic Messages | ✅ | `AnthropicExt`: top_k, thinking, metadata, cache_hints, `structured_output` | ✅ | ✅ | Extended Thinking (thinking block → `ResponseContent::Reasoning`) | ✅ (Strict Tool Use) |
+| OpenAI Chat Completions | ✅ | `OpenAIExt`: seed, penalties, `reasoning_effort`, `response_format`, `extra_body` | ✅ | ✅ | `ThinkingLevel` → `reasoning_effort` (o-series / GPT-5) | ✅ (json_object, json_schema) |
+| DeepSeek (`api.deepseek.com`) | ✅ (factory `deepseek::client`) | `OpenAIExt` (e.g. `extra_body: {"thinking": {"type": "disabled"}}`) | ✅ | ✅ | `ThinkingLevel` → `thinking` toggle + top-level `reasoning_effort`; `reasoning_content` → `ResponseContent::Reasoning` | via `extra_body` |
+| Anthropic Messages | ✅ | `AnthropicExt`: top_k, thinking, metadata, cache_hints, `structured_output` | ✅ | ✅ | `ThinkingLevel` → extended thinking (budget_tokens 4.6 / adaptive 4.7+) | ✅ (Strict Tool Use) |
 | Any OpenAI-compatible gateway | ✅ via `base_url` + `chat_path` overrides | `extra_body` for non-standard fields | ✅ | ✅ | depends on endpoint | via `extra_body` |
 
 Tested compatible gateways for the path-override path: GitHub Models
@@ -260,6 +260,58 @@ let inv = resp.into_canonical()
 println!("{}", inv.input["title"]);
 ```
 
+### Thinking / reasoning (universal path)
+
+`ChatRequest.thinking(ThinkingLevel)` controls model thinking/reasoning on the
+universal path — no native extensions needed. Each provider translates the spec
+into its own wire format:
+
+```rust
+use llm_adapter::types::ThinkingLevel;
+use llm_adapter::openai::{OpenAIProvider, ThinkingScheme};
+
+// OpenAI o-series: set thinking_scheme(ReasoningEffort) so ThinkingLevel
+// is translated to top-level reasoning_effort.
+let provider = OpenAIProvider::builder("sk-...")
+    .thinking_scheme(ThinkingScheme::ReasoningEffort)
+    .build();
+
+let req = ChatRequest::builder("o3-mini", 2048)
+    .message(Message::User(vec![RequestContent::Text("Explain quantum entanglement.".into())]))
+    .thinking(ThinkingLevel::High)
+    .build();
+```
+| `ThinkingLevel` | OpenAI | DeepSeek | Anthropic 4.6 | Anthropic 4.7+ |
+|---|---|---|---|---|
+| `Off` | omit | `thinking:{type:"disabled"}` | omit | omit |
+| `Minimal`–`XHigh` | `"minimal"`–`"xhigh"` | `thinking:{type:"enabled"}` + top-level `reasoning_effort:"high"\|"max"` | `{enabled,budget_tokens}` | `{adaptive,effort:"standard"\|"aggressive"}` |
+| `Budget(n)` | interval-mapped | `thinking:{type:"enabled"}` + `reasoning_effort: n>8192?"max":"high"` | `{enabled,budget:n}` | `{adaptive,effort:"aggressive"}` |
+
+`None` (default) injects no thinking field on any provider. `Some(Off)`
+explicitly disables — useful for DeepSeek V4 which enables thinking by default.
+
+> **Note:** On `OpenAIProvider`, `ThinkingLevel` is only translated when
+> `thinking_scheme()` is set (see [Provider configuration](#provider-configuration)).
+> With the default `ThinkingScheme::None`, setting `.thinking(ThinkingLevel::High)`
+> on a plain `OpenAIProvider::builder(key).build()` is a **silent no-op** — the
+> field is ignored with no error. This differs from Anthropic and DeepSeek (via
+> `deepseek::client()`), where the universal path translates `thinking` automatically.
+> For OpenAI o-series / GPT-5, set `.thinking_scheme(ThinkingScheme::ReasoningEffort)`
+> on the builder, or use `OpenAIExt.reasoning_effort` on the native path.
+
+For finer control (e.g. Anthropic extended thinking config), use the native path
+with `AnthropicExt.thinking` or `OpenAIExt.reasoning_effort` / `extra_body`.
+
+**DeepSeek R1 models:** The `deepseek-reasoner` model has reasoning built in
+and does not use the `thinking` parameter — just set the model name. Use
+`ThinkingLevel` with V4 models (`deepseek-v4-pro`, `deepseek-v4-flash`) for
+dynamic thinking on/off control.
+
+**OpenAI o-series / GPT-5.x:** Reasoning is built into the model architecture
+and cannot be truly turned off. `ThinkingLevel::Off` omits `reasoning_effort`
+(the model uses its default effort). To fully disable reasoning, switch to a
+non-reasoning model (e.g. `gpt-4o`).
+
 ### Provider-specific extensions (native path)
 
 The universal `Provider::chat` path is schema-neutral. When you need
@@ -291,7 +343,7 @@ use llm_adapter::anthropic::{AnthropicExt, AnthropicMetadata, AnthropicRequest, 
 
 let ext = AnthropicExt::builder()
     .top_k(40)
-    .thinking(ThinkingConfig { budget_tokens: 2000 })
+    .thinking(ThinkingConfig::Budget { budget_tokens: 2000 })
     .metadata(AnthropicMetadata { user_id: Some("my-user".into()) })
     .disable_parallel_tool_use()
     .build();
@@ -311,6 +363,7 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 | `chat_path(path)` | `/v1/chat/completions` | Chat completion path |
 | `parse_reasoning_content(false)` | disabled | Parse `reasoning_content` field (DeepSeek) |
 | `tolerant_keepalive(false)` | disabled | Tolerate keepalive bytes in SSE (DeepSeek) |
+| `thinking_scheme(scheme)` | `None` | How `ThinkingLevel` is translated: `ReasoningEffort` (OpenAI o-series), `ThinkingToggle` (DeepSeek), or `None` (legacy, ignore) |
 
 ### AnthropicProvider
 
@@ -336,9 +389,8 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 ### AnthropicExt
 
 | Method | Default | Description |
-|---|---|---|
 | `top_k(n)` | none | Only sample from top K tokens |
-| `thinking(config)` | none | Extended thinking with `budget_tokens` |
+| `thinking(config)` | none | Extended thinking: `ThinkingConfig::Budget { budget_tokens }` (4.6) or `ThinkingConfig::Adaptive { effort }` (4.7+) |
 | `metadata(m)` | none | `user_id` for Anthropic dashboard |
 | `disable_parallel_tool_use()` | disabled | Force single tool call per turn |
 | `cache_hint(hint)` | none | Ephemeral prompt cache control for a block index |

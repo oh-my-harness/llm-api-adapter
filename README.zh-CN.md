@@ -32,9 +32,9 @@
 
 | Provider | Universal 路径 | Native 扩展 | 流式 | Tool calling | Reasoning |
 |---|---|---|---|---|---|
-| OpenAI Chat Completions | ✅ | `OpenAIExt`：seed、penalties、`reasoning_effort`、`extra_body` | ✅ | ✅ | `reasoning_effort`（o 系列 / GPT-5） |
-| DeepSeek（`api.deepseek.com`） | ✅（工厂函数 `deepseek::client`） | `OpenAIExt`（如 `extra_body: {"thinking": {"type": "disabled"}}`） | ✅ | ✅ | `reasoning_content` 解析为 `ResponseContent::Reasoning` |
-| Anthropic Messages | ✅ | `AnthropicExt`：top_k、thinking、metadata、cache_hints | ✅ | ✅ | Extended Thinking（thinking 块 → `ResponseContent::Reasoning`） |
+| OpenAI Chat Completions | ✅ | `OpenAIExt`：seed、penalties、`reasoning_effort`、`extra_body` | ✅ | ✅ | `ThinkingLevel` → `reasoning_effort`（o 系列 / GPT-5） |
+| DeepSeek（`api.deepseek.com`） | ✅（工厂函数 `deepseek::client`） | `OpenAIExt`（如 `extra_body: {"thinking": {"type": "disabled"}}`） | ✅ | ✅ | `ThinkingLevel` → `thinking` 开关 + 顶层 `reasoning_effort`；`reasoning_content` → `ResponseContent::Reasoning` |
+| Anthropic Messages | ✅ | `AnthropicExt`：top_k、thinking、metadata、cache_hints | ✅ | ✅ | `ThinkingLevel` → 扩展思考（4.6 budget_tokens / 4.7+ adaptive） |
 | 任意 OpenAI 兼容网关 | ✅，通过 `base_url` + `chat_path` 覆盖 | `extra_body` 注入非标字段 | ✅ | ✅ | 取决于 endpoint |
 
 已经验证可通过路径覆盖支持的网关：GitHub Models（路径为 `/chat/completions`，无 `/v1`）、OpenRouter（路径为 `/api/v1/...`）、Groq（路径为 `/openai/v1/...`）。库本身不为这些网关做任何特殊处理，它们能工作纯粹是因为协议就是 OpenAI Chat Completions。
@@ -187,6 +187,56 @@ if matches!(resp.stop_reason, StopReason::ToolUse) {
 }
 ```
 
+### 思考 / 推理（universal 路径）
+
+`ChatRequest.thinking(ThinkingLevel)` 在 universal 路径上控制模型思考/推理，
+无需 native 扩展。各 provider 将 spec 翻译成自己的 wire 格式：
+
+```rust
+use llm_adapter::types::ThinkingLevel;
+use llm_adapter::openai::{OpenAIProvider, ThinkingScheme};
+
+// OpenAI o 系列：设置 thinking_scheme(ReasoningEffort)，ThinkingLevel
+// 会被翻译为顶层 reasoning_effort 字段。
+let provider = OpenAIProvider::builder("sk-...")
+    .thinking_scheme(ThinkingScheme::ReasoningEffort)
+    .build();
+
+let req = ChatRequest::builder("o3-mini", 2048)
+    .message(Message::User(vec![RequestContent::Text("解释量子纠缠。".into())]))
+    .thinking(ThinkingLevel::High)
+    .build();
+```
+
+| `ThinkingLevel` | OpenAI | DeepSeek | Anthropic 4.6 | Anthropic 4.7+ |
+|---|---|---|---|---|
+| `Off` | 省略 | `thinking:{type:"disabled"}` | 省略 | 省略 |
+| `Minimal`–`XHigh` | `"minimal"`–`"xhigh"` | `thinking:{type:"enabled"}` + 顶层 `reasoning_effort:"high"\|"max"` | `{enabled,budget_tokens}` | `{adaptive,effort:"standard"\|"aggressive"}` |
+| `Budget(n)` | 区间映射 | `thinking:{type:"enabled"}` + `reasoning_effort: n>8192?"max":"high"` | `{enabled,budget:n}` | `{adaptive,effort:"aggressive"}` |
+
+`None`（默认）不在任何 provider 上注入 thinking 字段。`Some(Off)` 显式关闭——
+对 DeepSeek V4（默认开启 thinking）有用。
+
+> **注意：** 在 `OpenAIProvider` 上，`ThinkingLevel` 仅在设置了
+> `thinking_scheme()` 时才会翻译（见 [Provider 配置](#provider-配置)）。
+> 默认 `ThinkingScheme::None` 下，在裸 `OpenAIProvider::builder(key).build()`
+> 上设置 `.thinking(ThinkingLevel::High)` 是**静默 no-op**——字段被忽略且不报错。
+> 这与 Anthropic 和 DeepSeek（通过 `deepseek::client()` 工厂）不同，后两者在
+> universal 路径上自动翻译 `thinking`。OpenAI o 系列 / GPT-5 需在 builder 上设置
+> `.thinking_scheme(ThinkingScheme::ReasoningEffort)`，或使用 native 路径的
+> `OpenAIExt.reasoning_effort`。
+
+如需更精细控制（如 Anthropic extended thinking 配置），使用 native 路径的
+`AnthropicExt.thinking` 或 `OpenAIExt.reasoning_effort` / `extra_body`。
+
+**DeepSeek R1 模型：**`deepseek-reasoner` 模型内置推理，不使用 `thinking`
+参数——直接设置模型名即可。`ThinkingLevel` 适用于 V4 模型（`deepseek-v4-pro`、
+`deepseek-v4-flash`）的动态思考开关控制。
+
+**OpenAI o 系列 / GPT-5.x：**推理是模型原生架构，无法真正关闭。
+`ThinkingLevel::Off` 仅省略 `reasoning_effort`（模型使用默认强度）。要完全
+关闭推理，需切换到非推理模型（如 `gpt-4o`）。
+
 ### Provider 特有扩展（native 路径）
 
 通用的 `Provider::chat` 路径是 schema 中立的。当你需要传入 provider 特有字段——例如 OpenAI 的 `seed`、`reasoning_effort`，或某个 OpenAI 兼容 endpoint 接受的非标字段——走 native 路径：
@@ -203,7 +253,6 @@ let ext = OpenAIExt::builder()
     .extra_body(json!({"thinking": {"type": "disabled"}}))
     .build();
 
-let oai_req = OpenAIRequest { base: chat_req, ext };
 let resp = openai_provider.chat_native(&oai_req).await?;
 let stream = openai_provider.chat_stream_native(&oai_req).await?;
 ```
@@ -215,7 +264,7 @@ use llm_adapter::anthropic::{AnthropicExt, AnthropicMetadata, AnthropicRequest, 
 
 let ext = AnthropicExt::builder()
     .top_k(40)
-    .thinking(ThinkingConfig { budget_tokens: 2000 })
+    .thinking(ThinkingConfig::Budget { budget_tokens: 2000 })
     .metadata(AnthropicMetadata { user_id: Some("my-user".into()) })
     .disable_parallel_tool_use()
     .build();
@@ -235,6 +284,7 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 | `chat_path(path)` | `/v1/chat/completions` | Chat completion 路径 |
 | `parse_reasoning_content(false)` | 关闭 | 解析 `reasoning_content` 字段（DeepSeek） |
 | `tolerant_keepalive(false)` | 关闭 | 容忍 SSE 中的 keepalive 字节（DeepSeek） |
+| `thinking_scheme(scheme)` | `None` | `ThinkingLevel` 的翻译方式：`ReasoningEffort`（OpenAI o 系列）、`ThinkingToggle`（DeepSeek）、`None`（legacy，忽略） |
 
 ### AnthropicProvider
 
@@ -261,7 +311,7 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 | 方法 | 默认值 | 说明 |
 |---|---|---|
 | `top_k(n)` | 无 | 仅从概率最高的 K 个 token 采样 |
-| `thinking(config)` | 无 | 使用 `budget_tokens` 配置扩展思考 |
+| `thinking(config)` | 无 | 扩展思考：`ThinkingConfig::Budget { budget_tokens }`（4.6）或 `ThinkingConfig::Adaptive { effort }`（4.7+） |
 | `metadata(m)` | 无 | 用于 Anthropic 控制台的 `user_id` |
 | `disable_parallel_tool_use()` | 关闭 | 强制每轮只调用一个工具 |
 | `cache_hint(hint)` | 无 | 针对指定 block index 的临时提示缓存控制 |

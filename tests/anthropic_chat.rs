@@ -179,3 +179,48 @@ async fn provider_is_object_safe_with_anthropic() {
     let p: Box<dyn Provider> = Box::new(AnthropicProvider::builder("test-key").build());
     drop(p);
 }
+
+#[tokio::test]
+async fn anthropic_thinking_46_budget_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_chat(
+        &server,
+        include_str!("fixtures/anthropic/chat_reasoning.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("claude-sonnet-4-6", 16384)
+        .message(Message::User(vec![RequestContent::Text("Think.".into())]))
+        .thinking(ThinkingLevel::Medium)
+        .build();
+
+    provider(&server).chat(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["thinking"]["type"], "enabled");
+    // Medium maps to 8192; max_tokens=16384 is large enough that no clamping occurs.
+    assert_eq!(body["thinking"]["budget_tokens"], 8192);
+}
+
+#[tokio::test]
+async fn anthropic_thinking_47_adaptive_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_chat(
+        &server,
+        include_str!("fixtures/anthropic/chat_reasoning.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("claude-opus-4-7", 1024)
+        .message(Message::User(vec![RequestContent::Text("Think.".into())]))
+        .thinking(ThinkingLevel::High)
+        .build();
+
+    provider(&server).chat(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["thinking"]["type"], "adaptive");
+    assert_eq!(body["thinking"]["effort"], "aggressive");
+}

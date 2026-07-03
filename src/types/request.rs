@@ -1,4 +1,5 @@
 use super::message::Message;
+use super::thinking::ThinkingLevel;
 
 /// Controls the format of the model's response.
 ///
@@ -198,9 +199,22 @@ pub struct ChatRequest {
     pub(crate) tool_choice: ToolChoice,
     pub(crate) params: SamplingParams,
     pub(crate) response_format: Option<ResponseFormat>,
-    /// Extended thinking token budget; `None` disables thinking.
-    /// Supported by Anthropic models; ignored by other providers.
-    pub(crate) extended_thinking_budget: Option<u32>,
+    /// Provider-neutral thinking/reasoning specification.
+    ///
+    /// `None` (default) injects no thinking field — DeepSeek's default thinking
+    /// stays on. `Some(Off)` explicitly disables thinking.
+    ///
+    /// **Universal path behavior:** Anthropic auto-translates `ThinkingLevel`
+    /// (4.6 budget / 4.7+ adaptive). OpenAI-compatible providers require
+    /// [`ThinkingScheme`](crate::openai::ThinkingScheme) to be configured on
+    /// the provider (via builder or `deepseek::client` factory); with the
+    /// default `ThinkingScheme::None`, `ThinkingLevel` is not translated.
+    ///
+    /// **Multi-turn note:** On the universal path, `ResponseContent::Reasoning`
+    /// in history messages is stripped of Anthropic signatures. For full
+    /// multi-turn thinking round-trips, use the native path
+    /// ([`AnthropicExt`](crate::anthropic::AnthropicExt)).
+    pub(crate) thinking: Option<ThinkingLevel>,
 }
 
 impl ChatRequest {
@@ -218,7 +232,7 @@ impl ChatRequest {
             max_tokens,
             stop_sequences: Vec::new(),
             response_format: None,
-            extended_thinking_budget: None,
+            thinking: None,
         }
     }
 
@@ -252,9 +266,9 @@ impl ChatRequest {
         self.response_format.as_ref()
     }
 
-    /// Extended thinking token budget (`None` means thinking is disabled).
-    pub fn extended_thinking_budget(&self) -> Option<u32> {
-        self.extended_thinking_budget
+    /// The thinking/reasoning specification, if any.
+    pub fn thinking(&self) -> Option<ThinkingLevel> {
+        self.thinking
     }
 }
 
@@ -279,7 +293,7 @@ pub struct ChatRequestBuilder {
     max_tokens: u32,
     stop_sequences: Vec<String>,
     response_format: Option<ResponseFormat>,
-    extended_thinking_budget: Option<u32>,
+    thinking: Option<ThinkingLevel>,
 }
 
 impl ChatRequestBuilder {
@@ -344,10 +358,9 @@ impl ChatRequestBuilder {
         self
     }
 
-    /// Enable extended thinking with the given token budget.
-    /// Supported by Anthropic models; ignored by other providers.
-    pub fn extended_thinking_budget(mut self, budget: u32) -> Self {
-        self.extended_thinking_budget = Some(budget);
+    /// Set the thinking/reasoning specification.
+    pub fn thinking(mut self, level: ThinkingLevel) -> Self {
+        self.thinking = Some(level);
         self
     }
 
@@ -365,7 +378,7 @@ impl ChatRequestBuilder {
                 stop_sequences: self.stop_sequences,
             },
             response_format: self.response_format,
-            extended_thinking_budget: self.extended_thinking_budget,
+            thinking: self.thinking,
         }
     }
 }
@@ -414,5 +427,19 @@ mod tests {
     fn response_format_none_by_default() {
         let req = ChatRequest::builder("gpt-4o", 512).build();
         assert!(req.response_format().is_none());
+    }
+
+    #[test]
+    fn thinking_builder_and_accessor() {
+        let req = ChatRequest::builder("gpt-4o", 512)
+            .thinking(ThinkingLevel::High)
+            .build();
+        assert_eq!(req.thinking(), Some(ThinkingLevel::High));
+    }
+
+    #[test]
+    fn thinking_none_by_default() {
+        let req = ChatRequest::builder("gpt-4o", 512).build();
+        assert!(req.thinking().is_none());
     }
 }

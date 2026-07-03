@@ -40,7 +40,7 @@
   "stop_sequences": ["..."],
   "stream": false,
   "metadata": {"user_id": "..."},
-  "thinking": {"type": "enabled", "budget_tokens": 10000}
+  "thinking": {"type": "adaptive", "effort": "aggressive"}
 }
 ```
 
@@ -81,9 +81,9 @@
     "input_tokens": 100,
     "output_tokens": 50,
     "cache_creation_input_tokens": 0,
-    "cache_read_input_tokens": 0
+    "cache_read_input_tokens": 0,
+    "output_tokens_details": {"thinking_tokens": 0}
   }
-}
 ```
 
 **和 OpenAI 的根本不同：**
@@ -326,22 +326,95 @@ content_block_stop
 
 ---
 
-## 8. Extended Thinking（值得标注）
+## 8. Extended Thinking
 
-- 启用：`"thinking": {"type": "enabled", "budget_tokens": N}`
-- 响应里多一个 `thinking` content block（明文）+ 可选 `redacted_thinking`（加密，给敏感场景）
-- thinking 之后的 assistant 块要带 signature，多轮交互回传 thinking 时必须保留 signature
-- 限制：`tool_choice` 只能 `auto` 或 `none`；不能用 `temperature`/`top_p`/`top_k`
+### 8.1 模型版本与启用方式
 
-适配层暂可不做 thinking，作为 P2 扩展。
+| 模型 | budget_tokens (4.6) | adaptive (4.7+) | 推荐 |
+|---|---|---|---|
+| Claude Opus 4.8 / Sonnet 5 | ❌ (400 error) | ✅ `thinking: {type:"adaptive", effort}` | adaptive |
+| Claude Opus 4.7 / Mythos 5 | ❌ (400 error) | ✅ adaptive | adaptive |
+| Claude Mythos Preview | ✅ supported | ✅ adaptive (默认开启) | adaptive |
+| Claude Opus 4.6 / Sonnet 4.6 | ⚠️ deprecated | ✅ adaptive | adaptive（budget 仍可用但将移除） |
+| Claude Opus 4.5 / Haiku 4.5 | ✅ | ❌ | budget_tokens |
 
----
+**4.6 budget 模式：**
+```json
+"thinking": {"type": "enabled", "budget_tokens": 10000, "display": "summarized"}
+```
+- `budget_tokens` 最小 1024，必须 < `max_tokens`
+- `budget_tokens` 在 4.6 上已 deprecated，将来移除
 
-## 9. 暂不展开（P2+）
+**4.7+ adaptive 模式：**
+```json
+"thinking": {"type": "adaptive", "effort": "standard" | "aggressive"}
+```
+- 不支持 `budget_tokens`（传了 400 error）
+- effort 仅两档：`standard`（默认）/ `aggressive`
 
-- Citations / RAG 引用回填
-- Computer Use（GUI 操作）
-- Programmatic tool calling（lambda-like）
-- Tool search tool（万级工具懒加载）
-- Message Batches API（异步批量）
-- Files API、PDF 输入
+**关闭思考：** 请求体完全移除 `thinking` 字段。`thinking: {type:"disabled"}` 在部分 4.7+ 模型上不支持。
+
+### 8.2 display 字段（控制思考内容返回）
+
+| 值 | 行为 | 默认模型 |
+|---|---|---|
+| `"summarized"` | thinking block 含摘要文本 | 4.6 及更早 |
+| `"omitted"` | thinking block 的 `thinking` 字段为空，仅返回 signature | 4.7+ / Mythos / Fable 5 |
+
+- `omitted` 用于不需要展示思考内容的场景，减少首包延迟（跳过 thinking token 流式传输）
+- 仍然按完整 thinking token 计费（omit 只减延迟不减成本）
+- `display` 对 `type: "disabled"` 无效
+- 两种模式的 `signature` 完全相同，可在对话轮次间切换
+
+### 8.3 响应格式
+
+```json
+{
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "Let me analyze this step by step...",
+      "signature": "WaUjzkypQ2mUEVM36O2TxuC06KN8..."
+    },
+    {
+      "type": "text",
+      "text": "Based on my analysis..."
+    }
+  ]
+}
+```
+
+- thinking block 始终在 text block 之前
+- thinking block 含 `thinking`（明文/空）和 `signature`（加密，用于多轮验证）
+- 可能有 `redacted_thinking` block（安全脱敏，`data` 字段为加密内容）
+
+### 8.4 Usage 中的 thinking token
+
+```json
+"usage": {
+  "input_tokens": 25,
+  "output_tokens": 348,
+  "output_tokens_details": {
+    "thinking_tokens": 312
+  }
+}
+```
+
+- `thinking_tokens` 是实际内部推理 token 数（非摘要文本 token 数）
+- `output_tokens` 是包含 thinking 的总计，用于计费
+- 计费按完整 thinking token，不按摘要文本
+
+### 8.5 多轮 signature 保留
+
+- 回传 thinking block 时**必须保留 signature**，否则 API 400
+- thinking block 必须完整、原样回传，不能修改序列或内容
+- `redacted_thinking` block 也必须原样回传
+- 4.5+ / Sonnet 4.6+ 默认保留所有历史 thinking block；更早模型仅保留最后一轮
+
+### 8.6 限制
+
+- `tool_choice` 仅支持 `auto` 和 `none`（不支持 `any` / `tool`）
+- `temperature` / `top_k` 被忽略（不报错）；`top_p` 仅允许 0.95~1
+- 不能预填 assistant 响应（pre-fill）
+- interleaved thinking（4.6+ 自动支持，在 tool call 之间插入思考）
+- 4.6+ 模型支持 interleaved thinking，budget_tokens 可超过 max_tokens（跨 tool call 累计）

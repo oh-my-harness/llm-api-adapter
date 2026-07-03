@@ -25,8 +25,7 @@ DeepSeek 不发明新协议，而是同时支持两种已有协议：
 |---|---|---|---|
 | `deepseek-v4-flash` | 快速/便宜 | 128K | 284B MoE（13B active），79% SWE-bench |
 | `deepseek-v4-pro` | 旗舰推理 | 128K（1M beta `[1m]` 后缀） | 1.6T MoE（49B active），SWE-bench 80.6%，Codeforces #1 |
-
-V4 模型的"思考模式"通过 `extra_body={"thinking": {"type": "enabled"}}` 开启（OpenAI SDK 调用时）。
+V4 模型的"思考模式"通过 `extra_body={"thinking": {"type": "enabled"}}` 开启，强度通过顶层 `reasoning_effort` 参数控制（**不是**嵌套在 thinking 对象内）。
 
 ### 2.2 即将废弃模型
 
@@ -35,9 +34,7 @@ V4 模型的"思考模式"通过 `extra_body={"thinking": {"type": "enabled"}}` 
 | 旧 ID | 当前实际指向 |
 |---|---|
 | `deepseek-chat` | `deepseek-v4-flash` 的非思考模式 |
-| `deepseek-reasoner` | `deepseek-v4-flash` 的思考模式 |
-
-适配层不要硬编码这俩别名，**让调用方传 model 字符串**。
+| `deepseek-reasoner` | `deepseek-v4-flash` 的思考模式（内置推理，不使用 `thinking` 参数） |
 
 ### 2.3 Anthropic 入口的模型映射
 
@@ -69,9 +66,16 @@ V4 模型的"思考模式"通过 `extra_body={"thinking": {"type": "enabled"}}` 
   "temperature": 0.7,
   "max_tokens": 4096,
   "stream": false,
+  "reasoning_effort": "high",
   "extra_body": {"thinking": {"type": "enabled"}}
 }
 ```
+
+**Wire format 要点：**
+- `reasoning_effort` 是**顶层字段**（与 OpenAI 一致），不是嵌套在 `thinking` 对象内
+- `thinking` 对象只有 `type: "enabled" | "disabled"`，不携带 effort
+- thinking toggle 默认 enabled（不传 `thinking` 字段时 V4 默认开启思考）
+- `reasoning_effort` 仅支持 `"high"`（默认）和 `"max"`；`low`/`medium` 降级为 `high`，`xhigh` 降级为 `max`
 
 OpenAI SDK 直接换 `base_url` + `api_key` 即可。
 
@@ -137,6 +141,20 @@ for chunk in response:
 ### 3.5 Function Calling
 
 完全兼容 OpenAI：tool 定义、`tool_calls` 响应、`role:"tool"` 回喂格式一模一样。strict 模式同样支持，**思考模式与非思考模式都支持**。
+
+### 3.6 Structured Output（重要限制）
+
+DeepSeek **不支持** `response_format: {type: "json_schema"}`——传入会返回 `invalid_request_error: "This response_format type is unavailable now"`。
+
+`response_format.type` 仅支持两个值：
+- `"text"`（默认）
+- `"json_object"`（JSON 模式，保证输出合法 JSON）
+
+**替代方案**（需要严格 Schema 约束时）：
+1. **降级用 `json_object` + Prompt 约束**：在 system/user 消息里写清字段定义、类型、必填项、示例，配合 `response_format: {type: "json_object"}`，工程上加一层 JSON 校验兜底。
+2. **用空工具调用迂回**：定义一个无实际执行逻辑的虚拟函数，把目标结构写在 `parameters` 里，开启 `strict: true`，强制模型输出符合 Schema 的函数参数。约束强度与 OpenAI `json_schema` 基本等价。
+
+> **注意区分**：Function Calling 里的 `parameters` Schema 支持 `strict: true` 严格模式（完整 JSON Schema），这是**工具调用场景**的能力，不是 `response_format` 字段的能力。
 
 ---
 
