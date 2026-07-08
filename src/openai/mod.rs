@@ -19,7 +19,7 @@ const DEFAULT_CHAT_PATH: &str = "/v1/chat/completions";
 const DEFAULT_EMBEDDINGS_PATH: &str = "/v1/embeddings";
 
 /// How [`ChatRequest::thinking`](crate::types::ChatRequest::thinking) (a
-/// [`ThinkingLevel`](crate::types::ThinkingLevel)) is translated to
+/// [`ThinkingLevel`]) is translated to
 /// OpenAI-compatible wire format on this provider.
 ///
 /// This is the **provider-side translation strategy** — distinct from
