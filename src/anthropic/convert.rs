@@ -203,9 +203,6 @@ pub(crate) fn to_anthropic(
     for msg in &conversation_messages {
         match msg {
             Message::User(content) => {
-                // If the last message was assistant, we need alternation;
-                // but we just ensure it's user. Tool results become user messages
-                // handled separately below.
                 wire_messages.push(user_content_to_wire(content));
             }
             Message::Assistant(content) => {
@@ -222,45 +219,20 @@ pub(crate) fn to_anthropic(
                     content: request_content_to_blocks(content),
                     is_error: if *is_error { Some(true) } else { None },
                 };
-                // If the last message in wire_messages is already a user, append to its blocks.
-                let appended = if let Some(last) = wire_messages.last_mut() {
-                    if last.role == "user" {
-                        match &mut last.content {
-                            AnthropicContentBlocks::Blocks(blocks) => {
-                                blocks.push(tool_result_block.clone());
-                                true
-                            }
-                            AnthropicContentBlocks::Text(t) => {
-                                // Promote Text to Blocks and append.
-                                let text_block = AnthropicContentBlock::Text {
-                                    text: std::mem::take(t),
-                                    cache_control: None,
-                                };
-                                let blocks = vec![text_block, tool_result_block.clone()];
-                                last.content = AnthropicContentBlocks::Blocks(blocks);
-                                true
-                            }
-                        }
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                if !appended {
-                    // Need a new user message.
-                    wire_messages.push(AnthropicWireMessageCompat {
-                        role: "user".into(),
-                        content: AnthropicContentBlocks::Blocks(vec![tool_result_block]),
-                    });
-                }
+                wire_messages.push(AnthropicWireMessageCompat {
+                    role: "user".into(),
+                    content: AnthropicContentBlocks::Blocks(vec![tool_result_block]),
+                });
             }
             Message::System(_) => {
                 // Already handled above — skip.
             }
         }
     }
+
+    let wire_messages = normalize_anthropic_wire_messages(wire_messages);
+
+    reject_leading_tool_result(&wire_messages)?;
 
     // Enforce alternation: user/assistant must alternate and first must be user.
     check_alternation(&wire_messages)?;
@@ -369,6 +341,77 @@ pub(crate) fn to_anthropic(
 struct AnthropicWireMessageCompat {
     role: String,
     content: AnthropicContentBlocks,
+}
+
+/// Merge adjacent wire messages with the same role.
+///
+/// Anthropic expresses tool results as user content blocks, so canonical
+/// `Tool + Tool` and `User + Tool` sequences naturally become adjacent user
+/// messages. Normalizing them here keeps the runtime/provider boundary clean:
+/// callers can pass canonical messages, and this adapter owns Anthropic's
+/// alternation requirement.
+fn normalize_anthropic_wire_messages(
+    messages: Vec<AnthropicWireMessageCompat>,
+) -> Vec<AnthropicWireMessageCompat> {
+    let mut normalized: Vec<AnthropicWireMessageCompat> = Vec::new();
+
+    for message in messages {
+        if let Some(last) = normalized.last_mut()
+            && last.role == message.role
+        {
+            append_anthropic_content(&mut last.content, message.content);
+            continue;
+        }
+
+        normalized.push(message);
+    }
+
+    normalized
+}
+
+fn append_anthropic_content(target: &mut AnthropicContentBlocks, addition: AnthropicContentBlocks) {
+    let mut blocks = anthropic_content_into_blocks(std::mem::replace(
+        target,
+        AnthropicContentBlocks::Blocks(Vec::new()),
+    ));
+    blocks.extend(anthropic_content_into_blocks(addition));
+    *target = AnthropicContentBlocks::Blocks(blocks);
+}
+
+fn anthropic_content_into_blocks(content: AnthropicContentBlocks) -> Vec<AnthropicContentBlock> {
+    match content {
+        AnthropicContentBlocks::Text(text) => vec![AnthropicContentBlock::Text {
+            text,
+            cache_control: None,
+        }],
+        AnthropicContentBlocks::Blocks(blocks) => blocks,
+    }
+}
+
+fn reject_leading_tool_result(messages: &[AnthropicWireMessageCompat]) -> Result<(), LlmError> {
+    let Some(first) = messages.first() else {
+        return Ok(());
+    };
+
+    if first.role == "user" && content_starts_with_tool_result(&first.content) {
+        return Err(LlmError::InvalidRequest(
+            "Anthropic tool results require a preceding assistant tool invocation".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn content_starts_with_tool_result(content: &AnthropicContentBlocks) -> bool {
+    match content {
+        AnthropicContentBlocks::Text(_) => false,
+        AnthropicContentBlocks::Blocks(blocks) => {
+            matches!(
+                blocks.first(),
+                Some(AnthropicContentBlock::ToolResult { .. })
+            )
+        }
+    }
 }
 
 /// Convert user request content to an Anthropic wire message.
@@ -862,14 +905,160 @@ mod tests {
     }
 
     #[test]
-    fn alternation_enforced() {
+    fn adjacent_user_messages_are_normalized() {
         let req = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
             .message(Message::User(vec![RC::Text("Hello".into())]))
             .message(Message::User(vec![RC::Text("World".into())]))
             .build();
-        let result = to_anthropic(&req, None, false);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("alternat"));
+        let wire = to_anthropic(&req, None, false).unwrap();
+
+        assert_eq!(wire.messages.len(), 1);
+        assert_eq!(wire.messages[0].role, "user");
+        match &wire.messages[0].content {
+            AnthropicContentBlocks::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                assert!(
+                    matches!(&blocks[0], AnthropicContentBlock::Text { text, .. } if text == "Hello")
+                );
+                assert!(
+                    matches!(&blocks[1], AnthropicContentBlock::Text { text, .. } if text == "World")
+                );
+            }
+            other => panic!("expected Blocks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adjacent_tool_results_are_normalized_into_one_user_message() {
+        let req = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
+            .message(Message::User(vec![RC::Text("Use both tools.".into())]))
+            .message(Message::Assistant(vec![
+                RespC::ToolInvocation(TI {
+                    id: "toolu_01".into(),
+                    name: "first".into(),
+                    input: serde_json::json!({}),
+                }),
+                RespC::ToolInvocation(TI {
+                    id: "toolu_02".into(),
+                    name: "second".into(),
+                    input: serde_json::json!({}),
+                }),
+            ]))
+            .message(Message::Tool {
+                invocation_id: "toolu_01".into(),
+                content: vec![RC::Text("first result".into())],
+                is_error: false,
+            })
+            .message(Message::Tool {
+                invocation_id: "toolu_02".into(),
+                content: vec![RC::Text("second result".into())],
+                is_error: true,
+            })
+            .build();
+
+        let wire = to_anthropic(&req, None, false).unwrap();
+
+        assert_eq!(wire.messages.len(), 3);
+        assert_eq!(wire.messages[0].role, "user");
+        assert_eq!(wire.messages[1].role, "assistant");
+        assert_eq!(wire.messages[2].role, "user");
+        match &wire.messages[2].content {
+            AnthropicContentBlocks::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                assert!(matches!(
+                    &blocks[0],
+                    AnthropicContentBlock::ToolResult { tool_use_id, is_error, .. }
+                        if tool_use_id == "toolu_01" && is_error.is_none()
+                ));
+                assert!(matches!(
+                    &blocks[1],
+                    AnthropicContentBlock::ToolResult { tool_use_id, is_error, .. }
+                        if tool_use_id == "toolu_02" && *is_error == Some(true)
+                ));
+            }
+            other => panic!("expected Blocks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_result_after_user_is_appended_to_that_user_message() {
+        let req = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
+            .message(Message::User(vec![RC::Text("Context for result.".into())]))
+            .message(Message::Tool {
+                invocation_id: "toolu_01".into(),
+                content: vec![RC::Text("result".into())],
+                is_error: false,
+            })
+            .build();
+
+        let wire = to_anthropic(&req, None, false).unwrap();
+
+        assert_eq!(wire.messages.len(), 1);
+        assert_eq!(wire.messages[0].role, "user");
+        match &wire.messages[0].content {
+            AnthropicContentBlocks::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                assert!(
+                    matches!(&blocks[0], AnthropicContentBlock::Text { text, .. } if text == "Context for result.")
+                );
+                assert!(matches!(
+                    &blocks[1],
+                    AnthropicContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "toolu_01"
+                ));
+            }
+            other => panic!("expected Blocks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn adjacent_assistant_messages_are_normalized() {
+        let req = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
+            .message(Message::User(vec![RC::Text("Hi".into())]))
+            .message(Message::Assistant(vec![RespC::Text("Thinking.".into())]))
+            .message(Message::Assistant(vec![RespC::ToolInvocation(TI {
+                id: "toolu_01".into(),
+                name: "lookup".into(),
+                input: serde_json::json!({"q": "x"}),
+            })]))
+            .build();
+
+        let wire = to_anthropic(&req, None, false).unwrap();
+
+        assert_eq!(wire.messages.len(), 2);
+        assert_eq!(wire.messages[1].role, "assistant");
+        match &wire.messages[1].content {
+            AnthropicContentBlocks::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 2);
+                assert!(
+                    matches!(&blocks[0], AnthropicContentBlock::Text { text, .. } if text == "Thinking.")
+                );
+                assert!(matches!(
+                    &blocks[1],
+                    AnthropicContentBlock::ToolUse { id, name, .. }
+                        if id == "toolu_01" && name == "lookup"
+                ));
+            }
+            other => panic!("expected Blocks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anthropic_still_rejects_conversation_starting_without_user() {
+        let assistant_first = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
+            .message(Message::Assistant(vec![RespC::Text("Hello".into())]))
+            .build();
+        let err = to_anthropic(&assistant_first, None, false).unwrap_err();
+        assert!(err.to_string().contains("first message"));
+
+        let tool_first = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
+            .message(Message::Tool {
+                invocation_id: "toolu_01".into(),
+                content: vec![RC::Text("result".into())],
+                is_error: false,
+            })
+            .build();
+        let err = to_anthropic(&tool_first, None, false).unwrap_err();
+        assert!(err.to_string().contains("preceding assistant"));
     }
 
     #[test]

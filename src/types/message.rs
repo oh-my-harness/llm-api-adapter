@@ -21,6 +21,13 @@ use super::content::{RequestContent, ResponseContent};
 /// 2. You execute each tool, collect results into `Tool` messages.
 /// 3. Append the `Assistant` + all `Tool` messages to the conversation and
 ///    call the provider again. The model sees the tool results and continues.
+///
+/// Provider adapters own provider-specific wire normalization. For example,
+/// OpenAI-compatible adapters encode [`Message::Tool`] as `role: "tool"`,
+/// while Anthropic encodes tool results as `tool_result` blocks inside `user`
+/// messages and normalizes adjacent user/tool-result turns to satisfy its
+/// alternation rules. Callers should keep using this canonical protocol instead
+/// of applying provider-specific message workarounds before invoking adapters.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     /// System-level instruction.

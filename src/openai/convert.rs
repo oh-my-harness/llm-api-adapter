@@ -565,7 +565,9 @@ pub(crate) fn oai_usage_to_canonical(u: OaiUsage, _parse_reasoning: bool) -> Usa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Message;
+    use crate::types::{
+        Message, RequestContent as RC, ResponseContent as RespC, ToolInvocation as TI,
+    };
 
     #[test]
     fn response_format_json_object_serializes() {
@@ -616,6 +618,51 @@ mod tests {
         let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false).unwrap();
         let body = serde_json::to_value(&oai).unwrap();
         assert!(body.get("response_format").is_none() || body["response_format"].is_null());
+    }
+
+    #[test]
+    fn oai_preserves_adjacent_tool_result_messages() {
+        let req = ChatRequest::builder("gpt-4o", 512)
+            .message(Message::User(vec![RC::Text("Use both tools.".into())]))
+            .message(Message::Assistant(vec![
+                RespC::ToolInvocation(TI {
+                    id: "call_1".into(),
+                    name: "first".into(),
+                    input: serde_json::json!({}),
+                }),
+                RespC::ToolInvocation(TI {
+                    id: "call_2".into(),
+                    name: "second".into(),
+                    input: serde_json::json!({"x": 1}),
+                }),
+            ]))
+            .message(Message::Tool {
+                invocation_id: "call_1".into(),
+                content: vec![RC::Text("first result".into())],
+                is_error: false,
+            })
+            .message(Message::Tool {
+                invocation_id: "call_2".into(),
+                content: vec![RC::Text("second result".into())],
+                is_error: false,
+            })
+            .build();
+
+        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false).unwrap();
+
+        assert_eq!(oai.messages.len(), 4);
+        assert_eq!(oai.messages[2].role, "tool");
+        assert_eq!(oai.messages[2].tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(oai.messages[3].role, "tool");
+        assert_eq!(oai.messages[3].tool_call_id.as_deref(), Some("call_2"));
+        assert!(matches!(
+            &oai.messages[2].content,
+            Some(OaiContent::Text(text)) if text == "first result"
+        ));
+        assert!(matches!(
+            &oai.messages[3].content,
+            Some(OaiContent::Text(text)) if text == "second result"
+        ));
     }
 
     #[test]
