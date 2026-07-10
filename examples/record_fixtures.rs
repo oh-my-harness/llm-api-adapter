@@ -157,7 +157,7 @@ async fn record_openai(client: &reqwest::Client, cfg: &ProviderConfig) {
         "model": model,
         "messages": [{"role": "user", "content": "What is the weather in Paris?"}],
         "tools": [weather_tool],
-        "tool_choice": "required",
+        "tool_choice": "auto",
         "max_tokens": 256,
     });
     if is_deepseek {
@@ -230,6 +230,33 @@ async fn record_openai(client: &reqwest::Client, cfg: &ProviderConfig) {
     )
     .await;
 
+    // chat_max_tokens: small token limit to trigger finish_reason: "length"
+    let mut max_tok_body = json!({
+        "model": model,
+        "messages": [{"role": "user", "content": "Write a very long story about a brave knight."}],
+        "max_tokens": 5,
+    });
+    if is_deepseek {
+        max_tok_body
+            .as_object_mut()
+            .unwrap()
+            .insert("thinking".into(), json!({"type": "disabled"}));
+    }
+    run_chat(
+        client,
+        cfg,
+        &dir,
+        "chat_max_tokens.json",
+        max_tok_body.clone(),
+    )
+    .await;
+
+    // stream_max_tokens: same scenario but streaming
+    let mut max_tok_stream = max_tok_body;
+    let obj = max_tok_stream.as_object_mut().unwrap();
+    obj.insert("stream".into(), json!(true));
+    obj.insert("stream_options".into(), json!({"include_usage": true}));
+    run_stream(client, cfg, &dir, "stream_max_tokens.txt", max_tok_stream).await;
     // Reasoning scenarios
     if let Some(rm) = cfg.reasoning_model.as_deref() {
         // DeepSeek V4: thinking is on by default — don't pass reasoning_effort
@@ -291,6 +318,30 @@ async fn record_deepseek(client: &reqwest::Client, cfg: &ProviderConfig) {
         }),
     )
     .await;
+    // stream_tool_call: tool call with streaming, thinking disabled for clean fixture
+    let weather_tool = json!({
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get current weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"location": {"type": "string"}},
+                "required": ["location"],
+            },
+        },
+    });
+    let tc_stream = json!({
+        "model": model,
+        "messages": [{"role": "user", "content": "What is the weather in Paris?"}],
+        "tools": [weather_tool],
+        "tool_choice": "required",
+        "max_tokens": 256,
+        "thinking": {"type": "disabled"},
+        "stream": true,
+        "stream_options": {"include_usage": true},
+    });
+    run_stream(client, cfg, &dir, "stream_tool_call.txt", tc_stream).await;
 
     if let Some(rm) = cfg.reasoning_model.as_deref() {
         // Thinking mode: DeepSeek V4 enables it via top-level "thinking" field
@@ -453,6 +504,34 @@ async fn record_anthropic(client: &reqwest::Client, cfg: &AnthropicConfig) {
     )
     .await;
 
+    // chat_max_tokens: tiny token limit to trigger stop_reason: "max_tokens"
+    run_anthropic_chat(
+        client,
+        cfg,
+        &dir,
+        "chat_max_tokens.json",
+        json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Write a very long essay about the history of computing."}],
+            "max_tokens": 5,
+        }),
+    )
+    .await;
+
+    // chat_stop_sequence: stop_sequences to trigger stop_reason: "stop_sequence"
+    run_anthropic_chat(
+        client,
+        cfg,
+        &dir,
+        "chat_stop_sequence.json",
+        json!({
+            "model": model,
+            "messages": [{"role": "user", "content": "Tell me a short story. Start with: Once upon"}],
+            "max_tokens": 256,
+            "stop_sequences": ["upon"],
+        }),
+    )
+    .await;
     // Reasoning scenario
     if let Some(rm) = cfg.reasoning_model.as_deref() {
         let chat_body = json!({
