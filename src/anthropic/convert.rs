@@ -580,9 +580,21 @@ fn apply_cache_hints(
                 }
                 AnthropicContentBlocks::Blocks(blocks)
             }
-            other @ AnthropicContentBlocks::Text(_) => {
+            AnthropicContentBlocks::Text(text) => {
+                let hint_matches = hints
+                    .iter()
+                    .any(|h| h.block_index == flat_index && h.ephemeral);
                 flat_index += 1;
-                other
+                if hint_matches {
+                    let mut block = AnthropicContentBlock::Text {
+                        text,
+                        cache_control: None,
+                    };
+                    apply_cache_control_to_block(&mut block);
+                    AnthropicContentBlocks::Blocks(vec![block])
+                } else {
+                    AnthropicContentBlocks::Text(text)
+                }
             }
         };
         msg.content = new_content;
@@ -925,6 +937,40 @@ mod tests {
                 );
             }
             other => panic!("expected Blocks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cache_hint_on_single_text_message_is_applied() {
+        let req = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
+            .message(Message::User(vec![RC::Text("Hello, cache me.".into())]))
+            .build();
+
+        let ext = AnthropicExt::builder()
+            .cache_hint(CacheHint {
+                block_index: 0,
+                ephemeral: true,
+            })
+            .build();
+
+        let wire = to_anthropic(&req, Some(&ext), false).unwrap();
+
+        // The first message's content should be Blocks form (array), not Text
+        // form (plain string), because the cache hint forced an upgrade.
+        match &wire.messages[0].content {
+            AnthropicContentBlocks::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 1);
+                match &blocks[0] {
+                    AnthropicContentBlock::Text { text, cache_control } => {
+                        assert_eq!(text, "Hello, cache me.");
+                        assert!(cache_control.is_some(), "cache_control must be set");
+                    }
+                    other => panic!("expected Text block, got {other:?}"),
+                }
+            }
+            other => panic!(
+                "expected Blocks form (cache hint should upgrade Text), got {other:?}"
+            ),
         }
     }
 

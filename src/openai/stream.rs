@@ -21,6 +21,8 @@ pub struct OaiStreamState {
     open_blocks: Vec<usize>,
     /// Pending stop reason to emit in MessageStop.
     pending_stop: Option<String>,
+    /// Whether MessageStop has already been emitted (prevents duplicate on [DONE] fallback).
+    message_stop_sent: bool,
 }
 
 impl OaiStreamState {
@@ -33,6 +35,7 @@ impl OaiStreamState {
             next_index: 0,
             open_blocks: Vec::new(),
             pending_stop: None,
+            message_stop_sent: false,
         }
     }
 
@@ -90,6 +93,7 @@ pub fn process_chunk(
             stop_reason,
             usage: super::convert::oai_usage_to_canonical(usage, parse_reasoning),
         }));
+        state.message_stop_sent = true;
     }
 
     events
@@ -103,21 +107,12 @@ fn process_delta(
 ) -> Vec<Result<StreamEvent, LlmError>> {
     let mut events = Vec::new();
 
-    // Process reasoning_content if enabled and present
+    // Process reasoning_content if enabled and present.
+    // Do NOT close the reasoning block when content is also present in the
+    // same delta — some providers (vLLM, GLM) interleave reasoning and text
+    // in the same chunk. Both blocks can coexist as open_blocks entries.
     if parse_reasoning && let Some(ref reasoning) = delta.reasoning_content {
-        // If text_index is set, we need to close it first (reasoning comes before text in streaming)
-        if state.text_index.is_some() {
-            // This shouldn't happen in normal flow, but handle it
-            let text_idx = state.text_index.unwrap();
-            events.push(Ok(StreamEvent::ContentStop {
-                index: text_idx,
-                signature: None,
-            }));
-            state.open_blocks.retain(|&x| x != text_idx);
-            state.text_index = None;
-        }
-
-        // Allocate reasoning block if needed
+        // Allocate reasoning block if needed.
         if state.reasoning_index.is_none() {
             let idx = state.allocate_index();
             state.reasoning_index = Some(idx);
@@ -128,7 +123,6 @@ fn process_delta(
             }));
         }
 
-        // Emit reasoning delta
         if let Some(idx) = state.reasoning_index {
             events.push(Ok(StreamEvent::ReasoningDelta {
                 index: idx,
@@ -137,19 +131,12 @@ fn process_delta(
         }
     }
 
-    // Process text content
+    // Process text content.
+    // Do NOT close the reasoning block when content appears — they can
+    // coexist. The reasoning block will be closed during MessageStop or
+    // when the stream ends.
     if let Some(ref content) = delta.content {
-        // Close reasoning block if it was open and we now have text
-        if let Some(reasoning_idx) = state.reasoning_index {
-            events.push(Ok(StreamEvent::ContentStop {
-                index: reasoning_idx,
-                signature: None,
-            }));
-            state.open_blocks.retain(|&x| x != reasoning_idx);
-            state.reasoning_index = None;
-        }
-
-        // Allocate text block if needed
+        // Allocate text block if needed.
         if state.text_index.is_none() {
             let idx = state.allocate_index();
             state.text_index = Some(idx);
@@ -160,7 +147,6 @@ fn process_delta(
             }));
         }
 
-        // Emit text delta
         if let Some(idx) = state.text_index {
             events.push(Ok(StreamEvent::TextDelta {
                 index: idx,
@@ -260,6 +246,27 @@ pub fn parse_stream(
                 Ok(event) => {
                     // Handle the [DONE] marker
                     if event.data == "[DONE]" {
+                        // If MessageStop was never emitted (provider didn't send
+                        // a usage chunk), emit a fallback so the stream doesn't
+                        // end silently with default-zero usage.
+                        if !state.message_stop_sent {
+                            let mut fallback = Vec::new();
+                            for &idx in &state.open_blocks {
+                                fallback.push(Ok(StreamEvent::ContentStop {
+                                    index: idx,
+                                    signature: None,
+                                }));
+                            }
+                            state.open_blocks.clear();
+                            let stop_reason =
+                                parse_stop_reason(state.pending_stop.as_deref());
+                            fallback.push(Ok(StreamEvent::MessageStop {
+                                stop_reason,
+                                usage: crate::types::Usage::default(),
+                            }));
+                            state.message_stop_sent = true;
+                            return futures::stream::iter(fallback).boxed();
+                        }
                         return futures::stream::iter(results).boxed();
                     }
 
