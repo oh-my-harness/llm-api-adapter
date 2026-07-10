@@ -1,0 +1,1 @@
+{"id":"max-tokens-001","object":"chat.completion","created":1780566139,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"This is a partial response that was cut"},"logprobs":null,"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":512,"total_tokens":522}}

@@ -1,0 +1,1 @@
+{"id":"msg_max_001","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"This response was truncated because"}],"stop_reason":"max_tokens","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":256,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}

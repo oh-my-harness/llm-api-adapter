@@ -1,0 +1,1 @@
+{"id":"filter-001","object":"chat.completion","created":1780566139,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":""},"logprobs":null,"finish_reason":"content_filter"}],"usage":{"prompt_tokens":5,"completion_tokens":0,"total_tokens":5}}

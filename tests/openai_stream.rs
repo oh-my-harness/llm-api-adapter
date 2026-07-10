@@ -1,7 +1,11 @@
 mod common;
 
 use futures::StreamExt;
-use llm_adapter::{Provider, openai::{OpenAIExt, OpenAIProvider, OpenAIRequest}, types::*};
+use llm_adapter::{
+    Provider,
+    openai::{OpenAIExt, OpenAIProvider, OpenAIRequest},
+    types::*,
+};
 use wiremock::MockServer;
 
 fn provider(server: &MockServer) -> OpenAIProvider {
@@ -9,7 +13,6 @@ fn provider(server: &MockServer) -> OpenAIProvider {
         .base_url(server.uri())
         .build()
 }
-
 
 #[tokio::test]
 async fn stream_simple_collects_to_response() {
@@ -95,11 +98,7 @@ async fn stream_tool_call_collects_invocation() {
 #[tokio::test]
 async fn stream_done_without_usage_emits_fallback_message_stop() {
     let server = MockServer::start().await;
-    common::mock_stream(
-        &server,
-        include_str!("fixtures/openai/stream_no_usage.txt"),
-    )
-    .await;
+    common::mock_stream(&server, include_str!("fixtures/openai/stream_no_usage.txt")).await;
 
     let req = ChatRequest::builder("test-model", 512)
         .message(Message::User(vec![RequestContent::Text("Hi".into())]))
@@ -122,8 +121,14 @@ async fn stream_done_without_usage_emits_fallback_message_stop() {
         }
     }
 
-    assert_eq!(content_stops, 1, "ContentStop should fire for the text block");
-    assert_eq!(message_stops, 1, "fallback MessageStop must fire on [DONE] without usage");
+    assert_eq!(
+        content_stops, 1,
+        "ContentStop should fire for the text block"
+    );
+    assert_eq!(
+        message_stops, 1,
+        "fallback MessageStop must fire on [DONE] without usage"
+    );
 }
 
 #[tokio::test]
@@ -185,4 +190,24 @@ async fn stream_interleaved_reasoning_content_produces_single_blocks() {
     if let ResponseContent::Text(t) = &text[0] {
         assert_eq!(t, "Answer here");
     }
+}
+#[tokio::test]
+async fn stream_stop_reason_length_maps_to_max_tokens() {
+    let server = MockServer::start().await;
+    common::mock_stream(
+        &server,
+        include_str!("fixtures/openai/stream_max_tokens.txt"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text(
+            "Write a very long story.".into(),
+        )]))
+        .build();
+
+    let handle = provider(&server).chat_stream(&req).await.unwrap();
+    let resp = handle.collect().await.unwrap();
+
+    assert!(matches!(resp.stop_reason, StopReason::MaxTokens));
 }

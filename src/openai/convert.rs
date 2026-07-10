@@ -566,7 +566,8 @@ pub(crate) fn oai_usage_to_canonical(u: OaiUsage, _parse_reasoning: bool) -> Usa
 mod tests {
     use super::*;
     use crate::types::{
-        Message, RequestContent as RC, ResponseContent as RespC, ToolInvocation as TI,
+        ImageSource, Message, RequestContent as RC, ResponseContent as RespC, ToolChoice,
+        ToolInvocation as TI,
     };
 
     #[test]
@@ -714,5 +715,53 @@ mod tests {
             thinking_to_oai_effort(ThinkingLevel::Budget(16385)).as_deref(),
             Some("xhigh")
         );
+    }
+
+    #[test]
+    fn tool_choice_to_oai_all_variants() {
+        assert_eq!(
+            tool_choice_to_oai(&ToolChoice::Auto),
+            serde_json::Value::String("auto".into())
+        );
+        assert_eq!(
+            tool_choice_to_oai(&ToolChoice::None),
+            serde_json::Value::String("none".into())
+        );
+        assert_eq!(
+            tool_choice_to_oai(&ToolChoice::Required),
+            serde_json::Value::String("required".into())
+        );
+        let specific = tool_choice_to_oai(&ToolChoice::Specific("my_tool".into()));
+        assert_eq!(specific["type"], "function");
+        assert_eq!(specific["function"]["name"], "my_tool");
+    }
+
+    #[test]
+    fn req_content_to_part_image_url() {
+        let part = req_content_to_part(&RC::Image(ImageSource::Url(
+            "https://example.com/img.png".into(),
+        )))
+        .unwrap();
+        match part {
+            OaiContentPart::ImageUrl { image_url } => {
+                assert_eq!(image_url.url, "https://example.com/img.png");
+            }
+            other => panic!("expected ImageUrl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn req_content_to_part_image_base64() {
+        let part = req_content_to_part(&RC::Image(ImageSource::Base64 {
+            media_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        }))
+        .unwrap();
+        match part {
+            OaiContentPart::ImageUrl { image_url } => {
+                assert_eq!(image_url.url, "data:image/png;base64,iVBORw0KGgo=");
+            }
+            other => panic!("expected ImageUrl, got {other:?}"),
+        }
     }
 }

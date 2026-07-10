@@ -1,0 +1,8 @@
+data: {"id":"stream-max-001","object":"chat.completion.chunk","created":1780566200,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"stream-max-001","object":"chat.completion.chunk","created":1780566200,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Partial text"},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"stream-max-001","object":"chat.completion.chunk","created":1780566200,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":""},"logprobs":null,"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":512,"total_tokens":517}}
+
+data: [DONE]
+

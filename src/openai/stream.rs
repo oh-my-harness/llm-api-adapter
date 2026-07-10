@@ -258,8 +258,7 @@ pub fn parse_stream(
                                 }));
                             }
                             state.open_blocks.clear();
-                            let stop_reason =
-                                parse_stop_reason(state.pending_stop.as_deref());
+                            let stop_reason = parse_stop_reason(state.pending_stop.as_deref());
                             fallback.push(Ok(StreamEvent::MessageStop {
                                 stop_reason,
                                 usage: crate::types::Usage::default(),

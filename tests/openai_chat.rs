@@ -395,3 +395,256 @@ async fn thinking_toggle_off_in_request_body() {
     let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
     assert_eq!(body["thinking"]["type"], "disabled");
 }
+#[tokio::test]
+async fn error_403_maps_to_forbidden() {
+    let server = MockServer::start().await;
+    common::mock_error(
+        &server,
+        403,
+        include_str!("fixtures/openai/error_forbidden.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let err = provider(&server).chat(&req).await.unwrap_err();
+    assert!(matches!(err, LlmError::Forbidden));
+}
+#[tokio::test]
+async fn error_402_maps_to_payment_required() {
+    let server = MockServer::start().await;
+    common::mock_error(
+        &server,
+        402,
+        include_str!("fixtures/openai/error_payment.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let err = provider(&server).chat(&req).await.unwrap_err();
+    match err {
+        LlmError::Provider { code, .. } => {
+            assert_eq!(code, "payment_required");
+        }
+        other => panic!("expected Provider error, got {other:?}"),
+    }
+}
+#[tokio::test]
+async fn error_529_maps_to_overloaded_with_retry_after() {
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/chat/completions"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(529)
+                .insert_header("retry-after", "30")
+                .set_body_raw(
+                    include_str!("fixtures/openai/error_overloaded.json"),
+                    "application/json",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let err = provider(&server).chat(&req).await.unwrap_err();
+    match err {
+        LlmError::Overloaded { retry_after } => {
+            assert_eq!(retry_after, Some(std::time::Duration::from_secs(30)));
+        }
+        other => panic!("expected Overloaded, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn error_429_extracts_retry_after_header() {
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/chat/completions"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(429)
+                .insert_header("retry-after", "120")
+                .set_body_raw(
+                    include_str!("fixtures/openai/error_rate_limit.json"),
+                    "application/json",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let err = provider(&server).chat(&req).await.unwrap_err();
+    match err {
+        LlmError::RateLimit { retry_after } => {
+            assert_eq!(retry_after, Some(std::time::Duration::from_secs(120)));
+        }
+        other => panic!("expected RateLimit, got {other:?}"),
+    }
+}
+#[tokio::test]
+async fn stop_reason_length_maps_to_max_tokens() {
+    let server = MockServer::start().await;
+    common::mock_chat(
+        &server,
+        include_str!("fixtures/openai/chat_max_tokens.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text(
+            "Write a very long story.".into(),
+        )]))
+        .build();
+
+    let resp = provider(&server).chat(&req).await.unwrap();
+    assert!(matches!(resp.stop_reason, StopReason::MaxTokens));
+}
+#[tokio::test]
+async fn stop_reason_content_filter_maps_correctly() {
+    let server = MockServer::start().await;
+    common::mock_chat(
+        &server,
+        include_str!("fixtures/openai/chat_content_filter.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text(
+            "Something inappropriate".into(),
+        )]))
+        .build();
+
+    let resp = provider(&server).chat(&req).await.unwrap();
+    assert!(matches!(resp.stop_reason, StopReason::ContentFilter));
+}
+
+#[tokio::test]
+async fn image_url_appears_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_simple.json")).await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![
+            RequestContent::Text("What is in this image?".into()),
+            RequestContent::Image(ImageSource::Url("https://example.com/cat.png".into())),
+        ]))
+        .build();
+
+    provider(&server).chat(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    let content = &body["messages"][0]["content"];
+    assert!(content.is_array(), "content should be array for multipart");
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "What is in this image?");
+    assert_eq!(content[1]["type"], "image_url");
+    assert_eq!(
+        content[1]["image_url"]["url"],
+        "https://example.com/cat.png"
+    );
+}
+
+#[tokio::test]
+async fn image_base64_appears_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_simple.json")).await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Image(
+            ImageSource::Base64 {
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgo=".into(),
+            },
+        )]))
+        .build();
+
+    provider(&server).chat(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    let content = &body["messages"][0]["content"];
+    assert!(content.is_array(), "single image should still be array");
+    assert_eq!(content[0]["type"], "image_url");
+    assert_eq!(
+        content[0]["image_url"]["url"],
+        "data:image/png;base64,iVBORw0KGgo="
+    );
+}
+
+#[tokio::test]
+async fn tool_choice_required_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_simple.json")).await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .tool(ToolDef::new(
+            "get_weather",
+            "Get weather",
+            serde_json::json!({"type": "object"}),
+        ))
+        .tool_choice(ToolChoice::Required)
+        .build();
+
+    provider(&server).chat(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["tool_choice"], "required");
+}
+
+#[tokio::test]
+async fn tool_choice_none_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_simple.json")).await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .tool(ToolDef::new(
+            "get_weather",
+            "Get weather",
+            serde_json::json!({"type": "object"}),
+        ))
+        .tool_choice(ToolChoice::None)
+        .build();
+
+    provider(&server).chat(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["tool_choice"], "none");
+}
+
+#[tokio::test]
+async fn tool_choice_specific_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_simple.json")).await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .tool(ToolDef::new(
+            "get_weather",
+            "Get weather",
+            serde_json::json!({"type": "object"}),
+        ))
+        .tool_choice(ToolChoice::Specific("get_weather".into()))
+        .build();
+
+    provider(&server).chat(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["tool_choice"]["type"], "function");
+    assert_eq!(body["tool_choice"]["function"]["name"], "get_weather");
+}

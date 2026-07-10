@@ -1,6 +1,10 @@
 mod common;
 
-use llm_adapter::{LlmError, Provider, anthropic::AnthropicProvider, types::*};
+use llm_adapter::{
+    LlmError, Provider,
+    anthropic::{AnthropicExt, AnthropicMetadata, AnthropicProvider, AnthropicRequest, CacheHint},
+    types::*,
+};
 use wiremock::MockServer;
 
 fn provider(server: &MockServer) -> AnthropicProvider {
@@ -223,4 +227,185 @@ async fn anthropic_thinking_47_adaptive_in_request_body() {
     let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
     assert_eq!(body["thinking"]["type"], "adaptive");
     assert_eq!(body["thinking"]["effort"], "aggressive");
+}
+#[tokio::test]
+async fn error_403_maps_to_forbidden() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_error(
+        &server,
+        403,
+        include_str!("fixtures/anthropic/error_forbidden.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("deepseek-v4-flash", 256)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let err = provider(&server).chat(&req).await.unwrap_err();
+    assert!(matches!(err, LlmError::Forbidden));
+}
+
+#[tokio::test]
+async fn error_429_maps_to_rate_limit() {
+    let server = MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/messages"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(429)
+                .insert_header("retry-after", "45")
+                .set_body_raw(
+                    include_str!("fixtures/anthropic/error_rate_limit.json"),
+                    "application/json",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let req = ChatRequest::builder("deepseek-v4-flash", 256)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let err = provider(&server).chat(&req).await.unwrap_err();
+    match err {
+        LlmError::RateLimit { retry_after } => {
+            assert_eq!(retry_after, Some(std::time::Duration::from_secs(45)));
+        }
+        other => panic!("expected RateLimit, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn error_529_maps_to_overloaded() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_error(
+        &server,
+        529,
+        include_str!("fixtures/anthropic/error_overloaded.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("deepseek-v4-flash", 256)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let err = provider(&server).chat(&req).await.unwrap_err();
+    assert!(matches!(err, LlmError::Overloaded { .. }));
+}
+
+#[tokio::test]
+async fn error_404_maps_to_invalid_request() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_error(
+        &server,
+        404,
+        include_str!("fixtures/anthropic/error_not_found.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("deepseek-v4-flash", 256)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let err = provider(&server).chat(&req).await.unwrap_err();
+    match err {
+        LlmError::InvalidRequest(msg) => {
+            assert!(
+                msg.contains("not_found"),
+                "message should contain 'not_found', got: {msg}"
+            );
+        }
+        other => panic!("expected InvalidRequest, got {other:?}"),
+    }
+}
+#[tokio::test]
+async fn stop_reason_max_tokens() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_chat(
+        &server,
+        include_str!("fixtures/anthropic/chat_max_tokens.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("claude-sonnet-4-20250514", 256)
+        .message(Message::User(vec![RequestContent::Text(
+            "Write a long essay.".into(),
+        )]))
+        .build();
+
+    let resp = provider(&server).chat(&req).await.unwrap();
+    assert!(matches!(resp.stop_reason, StopReason::MaxTokens));
+}
+
+#[tokio::test]
+async fn stop_reason_stop_sequence() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_chat(
+        &server,
+        include_str!("fixtures/anthropic/chat_stop_sequence.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("claude-sonnet-4-20250514", 256)
+        .message(Message::User(vec![RequestContent::Text(
+            "Say hello.".into(),
+        )]))
+        .stop_sequence("\n\n")
+        .build();
+
+    let resp = provider(&server).chat(&req).await.unwrap();
+    assert!(matches!(resp.stop_reason, StopReason::StopSequence));
+}
+
+#[tokio::test]
+async fn native_ext_top_k_and_metadata_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_chat(&server, include_str!("fixtures/anthropic/chat_simple.json")).await;
+
+    let base = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+    let ext = AnthropicExt::builder()
+        .top_k(40)
+        .metadata(AnthropicMetadata {
+            user_id: Some("user_42".into()),
+        })
+        .build();
+    let req = AnthropicRequest { base, ext };
+
+    provider(&server).chat_native(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["top_k"], 40);
+    assert_eq!(body["metadata"]["user_id"], "user_42");
+}
+
+#[tokio::test]
+async fn native_ext_cache_hint_in_request_body() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_chat(&server, include_str!("fixtures/anthropic/chat_simple.json")).await;
+
+    let base = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
+        .message(Message::User(vec![RequestContent::Text(
+            "Cache me.".into(),
+        )]))
+        .build();
+    let ext = AnthropicExt::builder()
+        .cache_hint(CacheHint {
+            block_index: 0,
+            ephemeral: true,
+        })
+        .build();
+    let req = AnthropicRequest { base, ext };
+
+    provider(&server).chat_native(&req).await.unwrap();
+
+    let received: Vec<_> = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    // The first message's first content block should have cache_control set
+    let block = &body["messages"][0]["content"][0];
+    assert_eq!(block["type"], "text");
+    assert_eq!(block["text"], "Cache me.");
+    assert_eq!(block["cache_control"]["type"], "ephemeral");
 }

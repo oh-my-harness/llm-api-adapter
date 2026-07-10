@@ -961,16 +961,17 @@ mod tests {
             AnthropicContentBlocks::Blocks(blocks) => {
                 assert_eq!(blocks.len(), 1);
                 match &blocks[0] {
-                    AnthropicContentBlock::Text { text, cache_control } => {
+                    AnthropicContentBlock::Text {
+                        text,
+                        cache_control,
+                    } => {
                         assert_eq!(text, "Hello, cache me.");
                         assert!(cache_control.is_some(), "cache_control must be set");
                     }
                     other => panic!("expected Text block, got {other:?}"),
                 }
             }
-            other => panic!(
-                "expected Blocks form (cache hint should upgrade Text), got {other:?}"
-            ),
+            other => panic!("expected Blocks form (cache hint should upgrade Text), got {other:?}"),
         }
     }
 
@@ -1526,6 +1527,38 @@ mod tests {
                 other => panic!("expected Reasoning, got {other:?}"),
             },
             other => panic!("expected Assistant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anthropic_native_response_into_canonical_strips_signature() {
+        use crate::anthropic::AnthropicNativeResponse;
+        let resp = AnthropicResponse {
+            id: "msg_sig2".into(),
+            response_type: "message".into(),
+            role: "assistant".into(),
+            model: "claude-sonnet-4-20250514".into(),
+            content: vec![
+                AnthropicResponseBlock::Thinking {
+                    thinking: "Let me think...".into(),
+                    signature: "sig_xyz".into(),
+                },
+                AnthropicResponseBlock::Text {
+                    text: "Answer.".into(),
+                },
+            ],
+            stop_reason: Some("end_turn".into()),
+            stop_sequence: None,
+            usage: AnthropicUsage::default(),
+        };
+        let native = AnthropicNativeResponse::from_wire(resp).unwrap();
+        let canon = native.into_canonical();
+        match &canon.content[0] {
+            ResponseContent::Reasoning { text, signature } => {
+                assert_eq!(text, "Let me think...");
+                assert!(signature.is_none(), "into_canonical must strip signature");
+            }
+            other => panic!("expected Reasoning, got {other:?}"),
         }
     }
 
