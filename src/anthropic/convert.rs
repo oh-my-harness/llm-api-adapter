@@ -51,9 +51,11 @@ pub enum ThinkingConfig {
         /// Maximum tokens to spend on thinking (must be ≥ 1024 and ≤ `max_tokens`).
         budget_tokens: u32,
     },
-    /// 4.7+ adaptive: `{type:"adaptive", effort}`.
+    /// 4.7+ adaptive: `thinking: {type:"adaptive"}` plus a top-level
+    /// `output_config: {effort}` (effort is never nested inside `thinking`
+    /// on the wire — the API rejects that shape).
     Adaptive {
-        /// Effort level: `"standard"` or `"aggressive"`.
+        /// Effort level: one of `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`.
         effort: String,
     },
 }
@@ -269,29 +271,42 @@ pub(crate) fn to_anthropic(
 
     let params = req.params();
 
-    // Convert thinking config: ext.thinking (native) overrides req.thinking (canonical).
-    // The native ThinkingConfig enum lets callers explicitly choose Budget (4.6)
-    // or Adaptive (4.7+). The canonical ThinkingLevel path auto-detects via
-    // is_adaptive_model(model). Some(Off) on canonical path means "omit thinking
-    // field" (same as None).
-    let thinking = ext
-        .thinking
-        .as_ref()
-        .map(|t| match t {
-            ThinkingConfig::Budget { budget_tokens } => super::schema::AnthropicThinkingConfig {
-                r#type: "enabled".into(),
-                budget_tokens: Some(clamp_budget(*budget_tokens, params.max_tokens())),
-                effort: None,
-            },
-            ThinkingConfig::Adaptive { effort } => super::schema::AnthropicThinkingConfig {
-                r#type: "adaptive".into(),
-                budget_tokens: None,
-                effort: Some(effort.clone()),
-            },
-        })
-        .or_else(|| {
-            req.thinking()
-                .and_then(|spec| thinking_to_anthropic(spec, req.model(), params.max_tokens()))
+    // Convert thinking + effort config: ext.thinking (native) overrides req.thinking
+    // (canonical). The native ThinkingConfig enum lets callers explicitly choose
+    // Budget (4.6) or Adaptive (4.7+). The canonical ThinkingLevel path auto-detects
+    // via is_adaptive_model(model). ThinkingLevel::Off means "omit thinking field
+    // and output_config.effort entirely".
+    //
+    // `effort` is returned separately from the thinking config because the API
+    // expects it as a top-level `output_config.effort` sibling, not nested inside
+    // `thinking` (nesting it there is rejected: "thinking.adaptive.effort: Extra
+    // inputs are not permitted").
+    let (thinking, effort) = if let Some(native) = ext.thinking.as_ref() {
+        match native {
+            ThinkingConfig::Budget { budget_tokens } => (
+                Some(super::schema::AnthropicThinkingConfig {
+                    r#type: "enabled".into(),
+                    budget_tokens: Some(clamp_budget(*budget_tokens, params.max_tokens())),
+                }),
+                None,
+            ),
+            ThinkingConfig::Adaptive { effort } => (
+                Some(super::schema::AnthropicThinkingConfig {
+                    r#type: "adaptive".into(),
+                    budget_tokens: None,
+                }),
+                Some(effort.clone()),
+            ),
+        }
+    } else if let Some(spec) = req.thinking() {
+        thinking_to_anthropic(spec, req.model(), params.max_tokens())
+    } else {
+        (None, None)
+    };
+
+    let output_config =
+        effort.map(|effort| super::schema::AnthropicOutputConfig {
+            effort: Some(effort),
         });
 
     // Convert metadata.
@@ -327,6 +342,7 @@ pub(crate) fn to_anthropic(
         stop_sequences: params.stop_sequences().to_vec(),
         stream,
         thinking,
+        output_config,
         metadata,
         disable_parallel_tool_use: if ext.disable_parallel_tool_use {
             Some(true)
@@ -663,32 +679,46 @@ fn clamp_budget(budget: u32, max_tokens: u32) -> u32 {
         .min(upper.max(MIN_BUDGET_TOKENS))
 }
 
-/// Map a canonical [`ThinkingLevel`] to an Anthropic thinking config.
+/// Map a canonical [`ThinkingLevel`] to an Anthropic thinking config and,
+/// on adaptive models, an `output_config.effort` value.
 ///
-/// Returns `None` for [`ThinkingLevel::Off`] — callers should omit the thinking
-/// field entirely in that case.
+/// Returns `(None, None)` for [`ThinkingLevel::Off`] — callers should omit
+/// both the thinking field and output_config.effort entirely in that case.
 ///
 /// The `model` string is used by [`is_adaptive_model`] to choose between
-/// the 4.6 (`enabled` + `budget_tokens`) and 4.7+ (`adaptive` + `effort`)
-/// wire formats. `max_tokens` is used to clamp `budget_tokens` so it stays
-/// within the Anthropic constraint (≥ 1024, < max_tokens).
+/// the 4.6 (`enabled` + `budget_tokens`) and 4.7+ (`adaptive` type, with a
+/// separate top-level `effort`) wire formats. `max_tokens` is used to clamp
+/// `budget_tokens` so it stays within the Anthropic constraint
+/// (≥ 1024, < max_tokens).
+///
+/// `effort` values sent to the API must be one of the levels Anthropic
+/// actually accepts: `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` —
+/// arbitrary strings like `"standard"`/`"aggressive"` are rejected.
 pub(crate) fn thinking_to_anthropic(
     spec: crate::types::ThinkingLevel,
     model: &str,
     max_tokens: u32,
-) -> Option<super::schema::AnthropicThinkingConfig> {
+) -> (Option<super::schema::AnthropicThinkingConfig>, Option<String>) {
     use crate::types::ThinkingLevel;
+    if spec == ThinkingLevel::Off {
+        return (None, None);
+    }
     if is_adaptive_model(model) {
         let effort = match spec {
-            ThinkingLevel::Minimal | ThinkingLevel::Low | ThinkingLevel::Medium => "standard",
-            ThinkingLevel::High | ThinkingLevel::XHigh | ThinkingLevel::Budget(_) => "aggressive",
-            ThinkingLevel::Off => return None,
+            ThinkingLevel::Minimal | ThinkingLevel::Low => "low",
+            ThinkingLevel::Medium => "medium",
+            ThinkingLevel::High => "high",
+            ThinkingLevel::XHigh => "xhigh",
+            ThinkingLevel::Budget(_) => "high",
+            ThinkingLevel::Off => unreachable!("handled above"),
         };
-        Some(super::schema::AnthropicThinkingConfig {
-            r#type: "adaptive".into(),
-            budget_tokens: None,
-            effort: Some(effort.into()),
-        })
+        (
+            Some(super::schema::AnthropicThinkingConfig {
+                r#type: "adaptive".into(),
+                budget_tokens: None,
+            }),
+            Some(effort.into()),
+        )
     } else {
         let budget = match spec {
             ThinkingLevel::Minimal => 2048,
@@ -697,13 +727,15 @@ pub(crate) fn thinking_to_anthropic(
             ThinkingLevel::High => 16384,
             ThinkingLevel::XHigh => 32768,
             ThinkingLevel::Budget(n) => n,
-            ThinkingLevel::Off => return None,
+            ThinkingLevel::Off => unreachable!("handled above"),
         };
-        Some(super::schema::AnthropicThinkingConfig {
-            r#type: "enabled".into(),
-            budget_tokens: Some(clamp_budget(budget, max_tokens)),
-            effort: None,
-        })
+        (
+            Some(super::schema::AnthropicThinkingConfig {
+                r#type: "enabled".into(),
+                budget_tokens: Some(clamp_budget(budget, max_tokens)),
+            }),
+            None,
+        )
     }
 }
 
@@ -1565,17 +1597,20 @@ mod tests {
     #[test]
     fn anthropic_46_budget_mapping() {
         use crate::types::ThinkingLevel;
-        let cfg = thinking_to_anthropic(ThinkingLevel::Medium, "claude-sonnet-4-6", 32768).unwrap();
+        let (cfg, effort) =
+            thinking_to_anthropic(ThinkingLevel::Medium, "claude-sonnet-4-6", 32768);
+        let cfg = cfg.unwrap();
         assert_eq!(cfg.r#type, "enabled");
         assert_eq!(cfg.budget_tokens, Some(8192));
-        assert!(cfg.effort.is_none());
+        assert!(effort.is_none());
     }
 
     #[test]
     fn anthropic_46_budget_explicit() {
         use crate::types::ThinkingLevel;
-        let cfg =
-            thinking_to_anthropic(ThinkingLevel::Budget(5000), "claude-sonnet-4-6", 32768).unwrap();
+        let (cfg, _) =
+            thinking_to_anthropic(ThinkingLevel::Budget(5000), "claude-sonnet-4-6", 32768);
+        let cfg = cfg.unwrap();
         assert_eq!(cfg.r#type, "enabled");
         assert_eq!(cfg.budget_tokens, Some(5000));
     }
@@ -1584,50 +1619,78 @@ mod tests {
     fn anthropic_46_budget_clamped_to_max_tokens() {
         // Budget(8192) with max_tokens=2048 → clamped to 2047 (< max_tokens).
         use crate::types::ThinkingLevel;
-        let cfg = thinking_to_anthropic(ThinkingLevel::Medium, "claude-sonnet-4-6", 2048).unwrap();
-        assert_eq!(cfg.budget_tokens, Some(2047));
+        let (cfg, _) = thinking_to_anthropic(ThinkingLevel::Medium, "claude-sonnet-4-6", 2048);
+        assert_eq!(cfg.unwrap().budget_tokens, Some(2047));
     }
 
     #[test]
     fn anthropic_46_budget_below_minimum_clamped_up() {
         // Budget(100) → clamped up to MIN_BUDGET_TOKENS (1024).
         use crate::types::ThinkingLevel;
-        let cfg =
-            thinking_to_anthropic(ThinkingLevel::Budget(100), "claude-sonnet-4-6", 32768).unwrap();
-        assert_eq!(cfg.budget_tokens, Some(1024));
+        let (cfg, _) =
+            thinking_to_anthropic(ThinkingLevel::Budget(100), "claude-sonnet-4-6", 32768);
+        assert_eq!(cfg.unwrap().budget_tokens, Some(1024));
     }
 
     #[test]
-    fn anthropic_47_adaptive_standard() {
+    fn anthropic_47_adaptive_medium() {
         use crate::types::ThinkingLevel;
-        let cfg = thinking_to_anthropic(ThinkingLevel::Medium, "claude-opus-4-7", 32768).unwrap();
+        let (cfg, effort) =
+            thinking_to_anthropic(ThinkingLevel::Medium, "claude-opus-4-7", 32768);
+        let cfg = cfg.unwrap();
         assert_eq!(cfg.r#type, "adaptive");
-        assert_eq!(cfg.effort.as_deref(), Some("standard"));
+        assert_eq!(effort.as_deref(), Some("medium"));
         assert!(cfg.budget_tokens.is_none());
     }
 
     #[test]
-    fn anthropic_47_adaptive_aggressive() {
+    fn anthropic_47_adaptive_high() {
         use crate::types::ThinkingLevel;
-        let cfg = thinking_to_anthropic(ThinkingLevel::High, "claude-opus-4-7", 32768).unwrap();
-        assert_eq!(cfg.r#type, "adaptive");
-        assert_eq!(cfg.effort.as_deref(), Some("aggressive"));
+        let (cfg, effort) = thinking_to_anthropic(ThinkingLevel::High, "claude-opus-4-7", 32768);
+        assert_eq!(cfg.unwrap().r#type, "adaptive");
+        assert_eq!(effort.as_deref(), Some("high"));
     }
 
     #[test]
-    fn anthropic_47_budget_degrades_to_aggressive() {
+    fn anthropic_47_budget_degrades_to_high_effort() {
         use crate::types::ThinkingLevel;
-        let cfg =
-            thinking_to_anthropic(ThinkingLevel::Budget(5000), "claude-opus-4-7", 32768).unwrap();
-        assert_eq!(cfg.r#type, "adaptive");
-        assert_eq!(cfg.effort.as_deref(), Some("aggressive"));
+        let (cfg, effort) =
+            thinking_to_anthropic(ThinkingLevel::Budget(5000), "claude-opus-4-7", 32768);
+        assert_eq!(cfg.unwrap().r#type, "adaptive");
+        assert_eq!(effort.as_deref(), Some("high"));
     }
 
     #[test]
     fn anthropic_off_returns_none() {
         use crate::types::ThinkingLevel;
-        assert!(thinking_to_anthropic(ThinkingLevel::Off, "claude-sonnet-4-6", 32768).is_none());
-        assert!(thinking_to_anthropic(ThinkingLevel::Off, "claude-opus-4-7", 32768).is_none());
+        let (cfg, effort) = thinking_to_anthropic(ThinkingLevel::Off, "claude-sonnet-4-6", 32768);
+        assert!(cfg.is_none());
+        assert!(effort.is_none());
+        let (cfg, effort) = thinking_to_anthropic(ThinkingLevel::Off, "claude-opus-4-7", 32768);
+        assert!(cfg.is_none());
+        assert!(effort.is_none());
+    }
+
+    #[test]
+    fn anthropic_47_adaptive_effort_is_top_level_output_config_not_nested_in_thinking() {
+        // Regression test: effort must never be serialized inside `thinking` —
+        // Anthropic rejects `thinking.adaptive.effort` as an unexpected field.
+        use crate::types::{ChatRequest, Message, RequestContent as RC, ThinkingLevel};
+
+        let req = ChatRequest::builder("claude-opus-4-7", 1024)
+            .message(Message::User(vec![RC::Text("hi".into())]))
+            .thinking(ThinkingLevel::Medium)
+            .build();
+        let wire = to_anthropic(&req, None, false).unwrap();
+
+        let thinking_json = serde_json::to_value(wire.thinking.as_ref().unwrap()).unwrap();
+        assert!(
+            thinking_json.get("effort").is_none(),
+            "effort must not be nested inside thinking: {thinking_json:?}"
+        );
+
+        let output_config = wire.output_config.as_ref().unwrap();
+        assert_eq!(output_config.effort.as_deref(), Some("medium"));
     }
 
     #[test]

@@ -38,6 +38,13 @@ pub(crate) struct AnthropicRequest {
     /// Thinking / extended thinking configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<AnthropicThinkingConfig>,
+    /// Output configuration (e.g. `effort`, structured-output format).
+    ///
+    /// `effort` lives here, as a top-level sibling of `thinking` — the API
+    /// rejects it if nested inside `thinking` (`thinking.adaptive.effort:
+    /// Extra inputs are not permitted`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<AnthropicOutputConfig>,
     /// Metadata about the request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<AnthropicMetadata>,
@@ -128,7 +135,16 @@ pub(crate) struct AnthropicThinkingConfig {
     /// Maximum tokens to spend on thinking (4.6 only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u32>,
-    /// Effort level (4.7+ only): `"standard"` or `"aggressive"`.
+}
+
+/// Output configuration: effort level and (future) structured-output format.
+///
+/// This is a top-level sibling of `thinking` in the wire request — the API
+/// rejects `effort` if it's nested inside `thinking`.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct AnthropicOutputConfig {
+    /// Effort level (4.7+ adaptive thinking only): one of
+    /// `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
 }
