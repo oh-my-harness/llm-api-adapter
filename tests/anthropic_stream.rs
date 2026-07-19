@@ -1,7 +1,7 @@
 mod common;
 
 use futures::StreamExt;
-use llm_adapter::{Provider, anthropic::AnthropicProvider, types::*};
+use llm_adapter::{LlmError, Provider, anthropic::AnthropicProvider, types::*};
 use wiremock::MockServer;
 
 fn provider(server: &MockServer) -> AnthropicProvider {
@@ -139,4 +139,73 @@ async fn stream_signature_preserved_in_reasoning_block() {
         Some("862aad5394484928855530328e82e357".to_string()),
         "Reasoning block signature should be preserved from signature_delta in stream"
     );
+}
+
+#[tokio::test]
+async fn anthropic_stream_dropped_mid_stream_returns_error() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_stream(
+        &server,
+        include_str!("fixtures/anthropic/stream_dropped_mid.txt"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("claude-test", 256)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let handle = provider(&server).chat_stream(&req).await.unwrap();
+    let err = handle.collect().await.expect_err("must return Err");
+
+    match err {
+        LlmError::StreamIncomplete {
+            received_chunks,
+            finish_reason,
+        } => {
+            assert!(received_chunks > 0, "received_chunks should be > 0");
+            assert!(finish_reason.is_none(), "finish_reason must be None");
+        }
+        other => panic!("expected StreamIncomplete, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn anthropic_stream_dropped_after_message_delta_surfaces_finish_reason() {
+    // Regression for issue #11: when the stream drops *after* a `message_delta`
+    // (which carries `stop_reason`) but *before* `message_stop`, Layer 1 must
+    // surface `finish_reason: Some("end_turn")` — the "model finished but stream
+    // termination was lost" case described in `LlmError::StreamIncomplete`'s
+    // docstring. Without the `pending_stop_reason` capture in `parse_stream`,
+    // this would be `None`.
+    let server = MockServer::start().await;
+    common::mock_anthropic_stream(
+        &server,
+        include_str!("fixtures/anthropic/stream_dropped_after_delta.txt"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("claude-test", 256)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let handle = provider(&server).chat_stream(&req).await.unwrap();
+    let err = handle.collect().await.expect_err("must return Err");
+
+    match err {
+        LlmError::StreamIncomplete {
+            received_chunks,
+            finish_reason,
+        } => {
+            assert!(
+                received_chunks > 0,
+                "received_chunks should be > 0, got {received_chunks}"
+            );
+            assert_eq!(
+                finish_reason.as_deref(),
+                Some("end_turn"),
+                "finish_reason must be captured from message_delta, got {finish_reason:?}"
+            );
+        }
+        other => panic!("expected StreamIncomplete, got {other:?}"),
+    }
 }

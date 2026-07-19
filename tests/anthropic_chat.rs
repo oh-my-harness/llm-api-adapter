@@ -226,7 +226,7 @@ async fn anthropic_thinking_47_adaptive_in_request_body() {
     let received: Vec<_> = server.received_requests().await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
     assert_eq!(body["thinking"]["type"], "adaptive");
-    assert_eq!(body["thinking"]["effort"], "aggressive");
+    assert_eq!(body["output_config"]["effort"], "high");
 }
 #[tokio::test]
 async fn error_403_maps_to_forbidden() {

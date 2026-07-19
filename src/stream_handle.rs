@@ -76,8 +76,10 @@ impl StreamHandle {
         let mut tool_args: HashMap<usize, String> = HashMap::new();
         let mut stop_reason = StopReason::EndTurn;
         let mut usage = Usage::default();
-
+        let mut received_chunks: u32 = 0;
+        let mut message_stop_received = false;
         while let Some(event) = self.inner.next().await {
+            received_chunks = received_chunks.saturating_add(1);
             match event? {
                 StreamEvent::ContentStart { index, kind } => match kind {
                     ContentKind::Text => {
@@ -111,8 +113,15 @@ impl StreamHandle {
                 } => {
                     stop_reason = sr;
                     usage = u;
+                    message_stop_received = true;
                 }
             }
+        }
+        if !message_stop_received {
+            return Err(LlmError::StreamIncomplete {
+                received_chunks,
+                finish_reason: None,
+            });
         }
 
         // Assemble content blocks in index order

@@ -1,0 +1,4 @@
+data: {"id":"test-drop","object":"chat.completion.chunk","created":1780566143,"model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","content":"Think"},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"test-drop","object":"chat.completion.chunk","created":1780566143,"model":"test-model","choices":[{"index":0,"delta":{"content":"ing"},"logprobs":null,"finish_reason":null}],"usage":null}
+

@@ -304,10 +304,9 @@ pub(crate) fn to_anthropic(
         (None, None)
     };
 
-    let output_config =
-        effort.map(|effort| super::schema::AnthropicOutputConfig {
-            effort: Some(effort),
-        });
+    let output_config = effort.map(|effort| super::schema::AnthropicOutputConfig {
+        effort: Some(effort),
+    });
 
     // Convert metadata.
     let metadata = ext
@@ -698,7 +697,10 @@ pub(crate) fn thinking_to_anthropic(
     spec: crate::types::ThinkingLevel,
     model: &str,
     max_tokens: u32,
-) -> (Option<super::schema::AnthropicThinkingConfig>, Option<String>) {
+) -> (
+    Option<super::schema::AnthropicThinkingConfig>,
+    Option<String>,
+) {
     use crate::types::ThinkingLevel;
     if spec == ThinkingLevel::Off {
         return (None, None);
@@ -1635,8 +1637,7 @@ mod tests {
     #[test]
     fn anthropic_47_adaptive_medium() {
         use crate::types::ThinkingLevel;
-        let (cfg, effort) =
-            thinking_to_anthropic(ThinkingLevel::Medium, "claude-opus-4-7", 32768);
+        let (cfg, effort) = thinking_to_anthropic(ThinkingLevel::Medium, "claude-opus-4-7", 32768);
         let cfg = cfg.unwrap();
         assert_eq!(cfg.r#type, "adaptive");
         assert_eq!(effort.as_deref(), Some("medium"));

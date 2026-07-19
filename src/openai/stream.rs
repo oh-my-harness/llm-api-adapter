@@ -2,6 +2,8 @@ use super::schema::{OaiChunk, OaiDelta};
 use crate::LlmError;
 use crate::types::{ContentKind, StopReason, StreamEvent};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Tracks streaming state across chunks for a single message.
 ///
@@ -231,67 +233,131 @@ pub fn parse_stream(
     tolerant_keepalive: bool,
 ) -> futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>> {
     use eventsource_stream::Eventsource;
-    use futures::stream::StreamExt;
+    use futures::stream::{StreamExt, once};
 
     let stream = response.bytes_stream();
     let event_stream = stream.eventsource();
 
     let mut state = OaiStreamState::new();
 
+    let chunk_count = Arc::new(AtomicU32::new(0));
+    let stop_received = Arc::new(AtomicBool::new(false));
+    let finish_reason_seen = Arc::new(Mutex::new(None::<String>));
+
     (event_stream
-        .flat_map(move |event_result| {
-            let mut results = Vec::new();
+        .flat_map({
+            let chunk_count = chunk_count.clone();
+            let finish_reason_seen = finish_reason_seen.clone();
+            let stop_received = stop_received.clone();
+            move |event_result| {
+                let mut results = Vec::new();
 
-            match event_result {
-                Ok(event) => {
-                    // Handle the [DONE] marker
-                    if event.data == "[DONE]" {
-                        // If MessageStop was never emitted (provider didn't send
-                        // a usage chunk), emit a fallback so the stream doesn't
-                        // end silently with default-zero usage.
-                        if !state.message_stop_sent {
-                            let mut fallback = Vec::new();
-                            for &idx in &state.open_blocks {
-                                fallback.push(Ok(StreamEvent::ContentStop {
-                                    index: idx,
-                                    signature: None,
+                match event_result {
+                    Ok(event) => {
+                        chunk_count.fetch_add(1, Ordering::SeqCst);
+
+                        // Handle the [DONE] marker
+                        if event.data == "[DONE]" {
+                            if !state.message_stop_sent {
+                                // Path A tightening: no finish_reason and no usage → error.
+                                if state.pending_stop.is_none() {
+                                    for &idx in &state.open_blocks {
+                                        results.push(Ok(StreamEvent::ContentStop {
+                                            index: idx,
+                                            signature: None,
+                                        }));
+                                    }
+                                    state.open_blocks.clear();
+                                    results.push(Err(LlmError::StreamIncomplete {
+                                        received_chunks: chunk_count.load(Ordering::SeqCst),
+                                        finish_reason: None,
+                                    }));
+                                    state.message_stop_sent = true;
+                                    stop_received.store(true, Ordering::SeqCst);
+                                    return futures::stream::iter(results).boxed();
+                                }
+                                // finish_reason present but no usage: keep fallback.
+                                let mut fallback = Vec::new();
+                                for &idx in &state.open_blocks {
+                                    fallback.push(Ok(StreamEvent::ContentStop {
+                                        index: idx,
+                                        signature: None,
+                                    }));
+                                }
+                                state.open_blocks.clear();
+                                let stop_reason = parse_stop_reason(state.pending_stop.as_deref());
+                                fallback.push(Ok(StreamEvent::MessageStop {
+                                    stop_reason,
+                                    usage: crate::types::Usage::default(),
                                 }));
+                                state.message_stop_sent = true;
+                                return futures::stream::iter(fallback).boxed();
                             }
-                            state.open_blocks.clear();
-                            let stop_reason = parse_stop_reason(state.pending_stop.as_deref());
-                            fallback.push(Ok(StreamEvent::MessageStop {
-                                stop_reason,
-                                usage: crate::types::Usage::default(),
-                            }));
-                            state.message_stop_sent = true;
-                            return futures::stream::iter(fallback).boxed();
+                            return futures::stream::iter(results).boxed();
                         }
-                        return futures::stream::iter(results).boxed();
-                    }
 
-                    // Parse the JSON chunk
-                    match serde_json::from_str::<OaiChunk>(&event.data) {
-                        Ok(chunk) => {
-                            // Process the chunk and emit events
-                            let events = process_chunk(&mut state, chunk, parse_reasoning);
-                            results = events;
-                        }
-                        Err(e) => {
-                            if tolerant_keepalive {
-                                // Non-JSON data line (e.g. DeepSeek keepalive); skip silently.
-                                let _ = e;
-                            } else {
-                                results.push(Err(LlmError::Decode(e)));
+                        // Parse the JSON chunk
+                        match serde_json::from_str::<OaiChunk>(&event.data) {
+                            Ok(chunk) => {
+                                let events = process_chunk(&mut state, chunk, parse_reasoning);
+                                if let Some(ref fr) = state.pending_stop {
+                                    *finish_reason_seen.lock().unwrap() = Some(fr.clone());
+                                }
+                                results = events;
+                            }
+                            Err(e) => {
+                                if tolerant_keepalive {
+                                    let _ = e;
+                                } else {
+                                    results.push(Err(LlmError::Decode(e)));
+                                }
                             }
                         }
+                    }
+                    Err(e) => {
+                        // Issue #11: a real connection drop surfaces as an
+                        // SSE-level Err. `collect` short-circuits on the first
+                        // Err, so the `.chain(once(...))` tail below would
+                        // never be polled — emit StreamIncomplete here to
+                        // preserve received_chunks/finish_reason for callers
+                        // matching on that variant. The underlying transport
+                        // error is logged for diagnostics.
+                        tracing::warn!(
+                            error = %e,
+                            received_chunks = chunk_count.load(Ordering::SeqCst),
+                            "SSE stream errored mid-flight; reporting StreamIncomplete"
+                        );
+                        results.push(Err(LlmError::StreamIncomplete {
+                            received_chunks: chunk_count.load(Ordering::SeqCst),
+                            finish_reason: finish_reason_seen.lock().unwrap().clone(),
+                        }));
+                        stop_received.store(true, Ordering::SeqCst);
                     }
                 }
-                Err(e) => {
-                    results.push(Err(LlmError::Stream(e.to_string())));
+
+                futures::stream::iter(results).boxed()
+            }
+        })
+        .inspect({
+            let stop_received = stop_received.clone();
+            move |ev| {
+                if let Ok(StreamEvent::MessageStop { .. }) = ev {
+                    stop_received.store(true, Ordering::SeqCst);
                 }
             }
-
-            futures::stream::iter(results).boxed()
         })
+        .chain(
+            once(async move {
+                if stop_received.load(Ordering::SeqCst) {
+                    None
+                } else {
+                    Some(Err(LlmError::StreamIncomplete {
+                        received_chunks: chunk_count.load(Ordering::SeqCst),
+                        finish_reason: finish_reason_seen.lock().unwrap().clone(),
+                    }))
+                }
+            })
+            .filter_map(|opt| async move { opt }),
+        )
         .boxed()) as _
 }
