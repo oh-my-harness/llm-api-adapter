@@ -1,7 +1,9 @@
 mod common;
 
 use llm_adapter::{LlmError, Provider, openai::OpenAIProvider, types::*};
-use wiremock::MockServer;
+use std::time::Duration;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn provider(server: &MockServer) -> OpenAIProvider {
     OpenAIProvider::builder("test-key")
@@ -647,4 +649,95 @@ async fn tool_choice_specific_in_request_body() {
     let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
     assert_eq!(body["tool_choice"]["type"], "function");
     assert_eq!(body["tool_choice"]["function"]["name"], "get_weather");
+}
+
+#[tokio::test]
+async fn read_timeout_aborts_slow_non_stream_response() {
+    let server = MockServer::start().await;
+    // Delay the response 500ms; read_timeout is 100ms → must time out.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(500))
+                .set_body_raw(
+                    include_str!("fixtures/openai/chat_simple.json"),
+                    "application/json",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .read_timeout(Duration::from_millis(100))
+        .build();
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hello".into())]))
+        .build();
+
+    let result = provider.chat(&req).await;
+    assert!(result.is_err(), "expected timeout error, got {:?}", result);
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, LlmError::Timeout),
+        "expected LlmError::Timeout, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn request_timeout_aborts_slow_non_stream_response() {
+    let server = MockServer::start().await;
+    // Delay the response 500ms; request_timeout (total) is 100ms → must time out.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(500))
+                .set_body_raw(
+                    include_str!("fixtures/openai/chat_simple.json"),
+                    "application/json",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        // read_timeout is generous so only request_timeout can fire.
+        .read_timeout(Duration::from_secs(60))
+        .request_timeout(Duration::from_millis(100))
+        .build();
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hello".into())]))
+        .build();
+
+    let result = provider.chat(&req).await;
+    assert!(result.is_err(), "expected timeout error, got {:?}", result);
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, LlmError::Timeout),
+        "expected LlmError::Timeout, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn builder_timeout_methods_chain_without_panic() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_simple.json")).await;
+
+    // All three methods chainable; build does not panic.
+    let _provider = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(30))
+        .request_timeout(Duration::from_secs(120))
+        .build();
+
+    // Defaults (no explicit timeout) also build cleanly.
+    let _default_provider = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .build();
 }

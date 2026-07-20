@@ -74,7 +74,7 @@ pub enum LlmError {
 
     /// HTTP transport failure.
     #[error("network error: {0}")]
-    Network(#[from] reqwest::Error),
+    Network(reqwest::Error),
 
     /// JSON serialisation or deserialisation failed.
     #[error("decode error: {0}")]
@@ -83,4 +83,14 @@ pub enum LlmError {
     /// Provider returned a structured error object.
     #[error("provider error {code}: {message}")]
     Provider { code: String, message: String },
+}
+
+impl From<reqwest::Error> for LlmError {
+    fn from(e: reqwest::Error) -> Self {
+        if e.is_timeout() {
+            LlmError::Timeout
+        } else {
+            LlmError::Network(e)
+        }
+    }
 }

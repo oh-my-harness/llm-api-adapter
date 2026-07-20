@@ -102,6 +102,9 @@ pub struct AnthropicProviderBuilder {
     base_url: String,
     messages_path: String,
     capabilities: crate::provider::ProviderCapabilities,
+    connect_timeout: Option<Duration>,
+    read_timeout: Option<Duration>,
+    request_timeout: Option<Duration>,
 }
 
 fn extract_retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
@@ -128,6 +131,9 @@ impl AnthropicProvider {
                 json_schema: false,
                 embeddings: false,
             },
+            connect_timeout: None,
+            read_timeout: None,
+            request_timeout: None,
         }
     }
 
@@ -233,13 +239,37 @@ impl AnthropicProviderBuilder {
         self
     }
 
+    /// Connect-phase timeout (DNS + TCP + TLS). Default 30s.
+    pub fn connect_timeout(mut self, d: Duration) -> Self {
+        self.connect_timeout = Some(d);
+        self
+    }
+
+    /// Interval between two reads. Default 60s.
+    /// Streaming-safe: as long as chunks keep arriving, this never triggers.
+    pub fn read_timeout(mut self, d: Duration) -> Self {
+        self.read_timeout = Some(d);
+        self
+    }
+
+    /// Total request lifecycle timeout. Default None (no total ceiling).
+    pub fn request_timeout(mut self, d: Duration) -> Self {
+        self.request_timeout = Some(d);
+        self
+    }
+
     /// Build the AnthropicProvider instance.
     pub fn build(self) -> AnthropicProvider {
         AnthropicProvider {
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(120))
-                .build()
-                .expect("failed to build HTTP client"),
+            client: {
+                let mut b = reqwest::Client::builder()
+                    .connect_timeout(self.connect_timeout.unwrap_or(Duration::from_secs(30)))
+                    .read_timeout(self.read_timeout.unwrap_or(Duration::from_secs(60)));
+                if let Some(rt) = self.request_timeout {
+                    b = b.timeout(rt);
+                }
+                b.build().expect("failed to build HTTP client")
+            },
             api_key: self.api_key,
             base_url: self.base_url,
             messages_path: self.messages_path,

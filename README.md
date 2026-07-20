@@ -364,6 +364,9 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 | `parse_reasoning_content(false)` | disabled | Parse `reasoning_content` field (DeepSeek) |
 | `tolerant_keepalive(false)` | disabled | Tolerate keepalive bytes in SSE (DeepSeek) |
 | `thinking_scheme(scheme)` | `None` | How `ThinkingLevel` is translated: `ReasoningEffort` (OpenAI o-series), `ThinkingToggle` (DeepSeek), or `None` (legacy, ignore) |
+| `connect_timeout(d)` | 30s | Connect-phase timeout (DNS + TCP + TLS) |
+| `read_timeout(d)` | 60s | Interval between two reads. Streaming-safe: never triggers as long as chunks keep arriving. Also protects non-stream requests against stalled servers. |
+| `request_timeout(d)` | `None` | Total request lifecycle timeout. When set, applies to both streaming and non-streaming. Use to cap overall duration; leave `None` for long thinking streams. |
 
 ### AnthropicProvider
 
@@ -371,6 +374,71 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 |---|---|---|
 | `base_url(url)` | `https://api.anthropic.com` | API endpoint host |
 | `messages_path(path)` | `/v1/messages` | Messages API path |
+| `connect_timeout(d)` | 30s | Connect-phase timeout (DNS + TCP + TLS) |
+| `read_timeout(d)` | 60s | Interval between two reads. Streaming-safe; also protects non-stream requests. |
+| `request_timeout(d)` | `None` | Total request lifecycle timeout. See "Timeout configuration" below. |
+
+### Timeout configuration
+
+The provider replaces the old hardcoded 120s total timeout with three
+independent knobs. Defaults are chosen so that **no configuration is needed
+for typical use, including long thinking/reasoning streams**.
+
+| Timeout | Default | Triggers when | Applies to |
+|---|---|---|---|
+| `connect_timeout` | 30s | Connection establishment (DNS + TCP + TLS) exceeds 30s | All requests |
+| `read_timeout` | 60s | No new bytes received for 60s between two reads | All requests |
+| `request_timeout` | `None` | Total elapsed time exceeds the value (if set) | All requests, if set |
+
+**Key semantics:** `read_timeout` is an *interval* timeout, not a total
+timeout. As long as chunks keep arriving within 60s of each other, it never
+fires — so a streaming thinking response that runs for 10 minutes completes
+normally. It only fires on a genuinely stalled connection.
+
+When a timeout fires, the provider returns `LlmError::Timeout` (not
+`LlmError::Network`). This lets callers branch retry logic on the variant:
+
+```rust
+match provider.chat(&req).await {
+    Err(LlmError::Timeout) => /* retry with backoff */,
+    Err(LlmError::Network(_)) => /* connection-level failure, likely not retryable */,
+    _ => /* ... */,
+}
+```
+
+#### When to customize
+
+**Long thinking streams (glm-5.2, claude, deepseek-v4 with reasoning):**
+defaults are sufficient — no action needed. The old 120s forced disconnect
+no longer exists.
+
+**Non-streaming short interactions** (cap overall duration):
+
+```rust
+use std::time::Duration;
+
+let provider = OpenAIProvider::builder("sk-...")
+    .request_timeout(Duration::from_secs(30)) // cap total at 30s
+    .build();
+```
+
+**Slow networks or large non-stream responses** (raise the read interval):
+
+```rust
+let provider = OpenAIProvider::builder("sk-...")
+    .read_timeout(Duration::from_secs(120)) // allow 120s between reads
+    .build();
+```
+
+**Mixed streaming + non-streaming from one provider:** use two provider
+instances with different `request_timeout` settings. A `request_timeout`
+set on one instance applies to both its `chat()` and `chat_stream()` calls;
+there is no per-call override.
+
+> Note: `request_timeout` is reqwest's total timeout and covers the entire
+> request lifecycle including streaming body receipt. Setting it on a
+> provider used for long thinking streams will re-introduce the forced
+> disconnect from issue #12. Leave it `None` for streaming-heavy workloads.
 
 ### OpenAIExt
 

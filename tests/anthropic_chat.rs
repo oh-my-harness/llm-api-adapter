@@ -5,7 +5,9 @@ use llm_adapter::{
     anthropic::{AnthropicExt, AnthropicMetadata, AnthropicProvider, AnthropicRequest, CacheHint},
     types::*,
 };
-use wiremock::MockServer;
+use std::time::Duration;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn provider(server: &MockServer) -> AnthropicProvider {
     AnthropicProvider::builder("test-key")
@@ -408,4 +410,92 @@ async fn native_ext_cache_hint_in_request_body() {
     assert_eq!(block["type"], "text");
     assert_eq!(block["text"], "Cache me.");
     assert_eq!(block["cache_control"]["type"], "ephemeral");
+}
+
+#[tokio::test]
+async fn read_timeout_aborts_slow_non_stream_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(500))
+                .set_body_raw(
+                    include_str!("fixtures/anthropic/chat_simple.json"),
+                    "application/json",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::builder("test-key")
+        .base_url(server.uri())
+        .read_timeout(Duration::from_millis(100))
+        .build();
+
+    let req = ChatRequest::builder("claude-3-5-sonnet-20241022", 512)
+        .message(Message::User(vec![RequestContent::Text("Hello".into())]))
+        .build();
+
+    let result = provider.chat(&req).await;
+    assert!(result.is_err(), "expected timeout error, got {:?}", result);
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, LlmError::Timeout),
+        "expected LlmError::Timeout, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn request_timeout_aborts_slow_non_stream_response() {
+    let server = MockServer::start().await;
+    // Delay the response 500ms; request_timeout (total) is 100ms → must time out.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(500))
+                .set_body_raw(
+                    include_str!("fixtures/anthropic/chat_simple.json"),
+                    "application/json",
+                ),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::builder("test-key")
+        .base_url(server.uri())
+        // read_timeout is generous so only request_timeout can fire.
+        .read_timeout(Duration::from_secs(60))
+        .request_timeout(Duration::from_millis(100))
+        .build();
+
+    let req = ChatRequest::builder("claude-3-5-sonnet-20241022", 512)
+        .message(Message::User(vec![RequestContent::Text("Hello".into())]))
+        .build();
+
+    let result = provider.chat(&req).await;
+    assert!(result.is_err(), "expected timeout error, got {:?}", result);
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, LlmError::Timeout),
+        "expected LlmError::Timeout, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn builder_timeout_methods_chain_without_panic() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_chat(&server, include_str!("fixtures/anthropic/chat_simple.json")).await;
+
+    let _provider = AnthropicProvider::builder("test-key")
+        .base_url(server.uri())
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(30))
+        .request_timeout(Duration::from_secs(120))
+        .build();
+
+    let _default_provider = AnthropicProvider::builder("test-key")
+        .base_url(server.uri())
+        .build();
 }

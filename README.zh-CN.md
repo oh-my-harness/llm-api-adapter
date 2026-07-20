@@ -285,6 +285,9 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 | `parse_reasoning_content(false)` | 关闭 | 解析 `reasoning_content` 字段（DeepSeek） |
 | `tolerant_keepalive(false)` | 关闭 | 容忍 SSE 中的 keepalive 字节（DeepSeek） |
 | `thinking_scheme(scheme)` | `None` | `ThinkingLevel` 的翻译方式：`ReasoningEffort`（OpenAI o 系列）、`ThinkingToggle`（DeepSeek）、`None`（legacy，忽略） |
+| `connect_timeout(d)` | 30s | 连接建立阶段超时（DNS + TCP + TLS） |
+| `read_timeout(d)` | 60s | 两次 read 之间的间隔超时。流式安全：只要 chunk 持续到达就不会触发；同时保护非流式请求免受服务器挂起影响。 |
+| `request_timeout(d)` | `None` | 总请求生命周期超时。设置后对流式和非流式都生效。用于限制总时长；长 thinking 流式场景应保持 `None`。 |
 
 ### AnthropicProvider
 
@@ -292,6 +295,66 @@ let stream = anthropic_provider.chat_stream_native(&anth_req).await?;
 |---|---|---|
 | `base_url(url)` | `https://api.anthropic.com` | API endpoint 主机地址 |
 | `messages_path(path)` | `/v1/messages` | Messages API 路径 |
+| `connect_timeout(d)` | 30s | 连接建立阶段超时（DNS + TCP + TLS） |
+| `read_timeout(d)` | 60s | 两次 read 之间的间隔超时。流式安全；同时保护非流式请求。 |
+| `request_timeout(d)` | `None` | 总请求生命周期超时。详见下方「超时配置」。 |
+
+### 超时配置
+
+Provider 用三个独立超时取代了原先硬编码的 120s 总超时。默认值的选择保证
+**典型场景无需任何配置，包括长时间的 thinking/reasoning 流式响应**。
+
+| 超时 | 默认值 | 触发条件 | 适用范围 |
+|---|---|---|---|
+| `connect_timeout` | 30s | 连接建立（DNS + TCP + TLS）超过 30s | 所有请求 |
+| `read_timeout` | 60s | 两次 read 之间超过 60s 无新字节 | 所有请求 |
+| `request_timeout` | `None` | 总时长超过设定值（如果设了） | 所有请求（设了才生效） |
+
+**关键语义：** `read_timeout` 是*间隔*超时，不是总超时。只要 chunk 之间
+间隔不超过 60s 就永远不会触发——所以一个运行 10 分钟的流式 thinking 响应
+能正常完成。它只在连接真正挂起时才触发。
+
+超时触发时，provider 返回 `LlmError::Timeout`（而非 `LlmError::Network`）。
+调用方可以直接按变体分支重试逻辑：
+
+```rust
+match provider.chat(&req).await {
+    Err(LlmError::Timeout) => /* 退避后重试 */,
+    Err(LlmError::Network(_)) => /* 连接级故障，通常不可重试 */,
+    _ => /* ... */,
+}
+```
+
+#### 何时自定义
+
+**长 thinking 流式（glm-5.2、claude、deepseek-v4 reasoning）：** 默认值
+已足够，无需任何操作。原先的 120s 强制断开已不存在。
+
+**非流式短交互**（限制总时长）：
+
+```rust
+use std::time::Duration;
+
+let provider = OpenAIProvider::builder("sk-...")
+    .request_timeout(Duration::from_secs(30)) // 总时长上限 30s
+    .build();
+```
+
+**慢网络或大体积非流式响应**（调大读间隔）：
+
+```rust
+let provider = OpenAIProvider::builder("sk-...")
+    .read_timeout(Duration::from_secs(120)) // 允许两次 read 间隔最多 120s
+    .build();
+```
+
+**同一 provider 既做流式又做非流式：** 用两个 provider 实例，分别设置不同
+的 `request_timeout`。`request_timeout` 一旦设置，对该实例的 `chat()` 和
+`chat_stream()` 都生效；没有按调用方式分别配置的机制。
+
+> 注意：`request_timeout` 是 reqwest 的总超时，覆盖整个请求生命周期（包括
+> 流式 body 接收）。在用于长 thinking 流式的 provider 上设置它会重新引入
+> issue #12 的强制断开问题。流式密集场景请保持 `None`。
 
 ### OpenAIExt
 
