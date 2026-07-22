@@ -217,10 +217,18 @@ impl AnthropicProvider {
         req: &AnthropicRequest,
     ) -> Result<StreamHandle, LlmError> {
         let wire_req = convert::to_anthropic(&req.base, Some(&req.ext), true)?;
+        let start = std::time::Instant::now();
         let response = self.send(&wire_req, true).await?;
+        let latency_ms = start.elapsed().as_millis() as u64;
+        let status_code = Some(response.status().as_u16());
         let model = wire_req.model.clone();
         let stream = stream::parse_stream(response);
-        Ok(StreamHandle::new(model, stream))
+        Ok(StreamHandle::with_meta(
+            model,
+            stream,
+            status_code,
+            latency_ms,
+        ))
     }
 }
 

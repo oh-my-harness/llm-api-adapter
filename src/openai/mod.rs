@@ -233,11 +233,19 @@ impl OpenAIProvider {
     pub async fn chat_stream_native(&self, req: &OpenAIRequest) -> Result<StreamHandle, LlmError> {
         let oai_req = convert::to_oai(&req.base, Some(&req.ext), self.thinking_scheme, true)?;
         let extra_body = self.resolve_extra_body(&req.ext.extra_body, req.base.thinking())?;
+        let start = std::time::Instant::now();
         let response = self.send(&oai_req, extra_body.as_deref(), true).await?;
+        let latency_ms = start.elapsed().as_millis() as u64;
+        let status_code = Some(response.status().as_u16());
         let model = oai_req.model.clone();
         let tolerant = req.ext.tolerant_keepalive || self.tolerant_keepalive;
         let stream = stream::parse_stream(response, req.ext.parse_reasoning_content, tolerant);
-        Ok(StreamHandle::new(model, stream))
+        Ok(StreamHandle::with_meta(
+            model,
+            stream,
+            status_code,
+            latency_ms,
+        ))
     }
     /// Generate embeddings using the native OpenAI-compatible embeddings API.
     pub async fn embed_native(

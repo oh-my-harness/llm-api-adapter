@@ -18,20 +18,45 @@ pub struct StreamHandle {
     pub(crate) id: String,
     pub(crate) model: String,
     pub(crate) inner: BoxStream,
+    pub(crate) status_code: Option<u16>,
+    pub(crate) latency_ms: u64,
 }
 
 impl StreamHandle {
     pub(crate) fn new(model: impl Into<String>, inner: BoxStream) -> Self {
+        Self::with_meta(model, inner, None, 0)
+    }
+
+    /// Create a `StreamHandle` with HTTP response metadata.
+    pub(crate) fn with_meta(
+        model: impl Into<String>,
+        inner: BoxStream,
+        status_code: Option<u16>,
+        latency_ms: u64,
+    ) -> Self {
         Self {
             id: String::new(),
             model: model.into(),
             inner,
+            status_code,
+            latency_ms,
         }
     }
 
     /// Create a `StreamHandle` from a raw stream — for testing and adapters only.
     pub fn from_raw_stream(model: impl Into<String>, inner: BoxStream) -> Self {
         Self::new(model, inner)
+    }
+
+    /// Returns the HTTP status code from the provider response, if available.
+    pub fn status_code(&self) -> Option<u16> {
+        self.status_code
+    }
+
+    /// Returns the request latency in milliseconds (time from send to first
+    /// response byte).
+    pub fn latency_ms(&self) -> u64 {
+        self.latency_ms
     }
 
     /// Returns the model name reported by the provider for this stream.
