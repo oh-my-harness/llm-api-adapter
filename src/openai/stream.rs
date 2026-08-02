@@ -276,7 +276,8 @@ pub fn parse_stream(
                                     stop_received.store(true, Ordering::SeqCst);
                                     return futures::stream::iter(results).boxed();
                                 }
-                                // finish_reason present but no usage: keep fallback.
+                                // The response completed, but the provider did
+                                // not supply authoritative usage.
                                 let mut fallback = Vec::new();
                                 for &idx in &state.open_blocks {
                                     fallback.push(Ok(StreamEvent::ContentStop {
@@ -288,7 +289,7 @@ pub fn parse_stream(
                                 let stop_reason = parse_stop_reason(state.pending_stop.as_deref());
                                 fallback.push(Ok(StreamEvent::MessageStop {
                                     stop_reason,
-                                    usage: crate::types::Usage::default(),
+                                    usage: crate::types::Usage::missing(),
                                 }));
                                 state.message_stop_sent = true;
                                 return futures::stream::iter(fallback).boxed();

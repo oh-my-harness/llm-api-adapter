@@ -113,9 +113,10 @@ async fn stream_done_without_usage_emits_fallback_message_stop() {
     while let Some(event) = events.next().await {
         match event.unwrap() {
             StreamEvent::ContentStop { .. } => content_stops += 1,
-            StreamEvent::MessageStop { stop_reason, .. } => {
+            StreamEvent::MessageStop { stop_reason, usage } => {
                 message_stops += 1;
                 assert!(matches!(stop_reason, StopReason::EndTurn));
+                assert_eq!(usage.provenance, UsageProvenance::Missing);
             }
             _ => {}
         }
@@ -287,6 +288,7 @@ async fn stream_done_with_finish_reason_but_no_usage_still_fallbacks() {
     let resp = handle.collect().await.expect("must return Ok");
 
     assert!(matches!(resp.stop_reason, StopReason::EndTurn));
+    assert_eq!(resp.usage.provenance, UsageProvenance::Missing);
 }
 
 #[tokio::test]

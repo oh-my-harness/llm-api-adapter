@@ -5,6 +5,11 @@ pub const BILLING_USAGE_PROFILE_VERSION: &str = "1";
 pub const BILLING_USAGE_PROFILE_CONTRACT: &str = "input_tokens=gross_input;cache_read_tokens=input_subset;cache_creation_input_tokens=input_subset;cache_read_and_creation=disjoint;output_tokens=gross_output;reasoning_tokens=output_subset;uncached_input=input_tokens-cache_read_tokens-cache_creation_input_tokens";
 pub const BILLING_USAGE_PROFILE_DIGEST: &str =
     "sha256:6afb4df926d32f3917ab28fb7ea30af87b20d7b81391d800c076f637c7eb73fb";
+pub const USAGE_REPORT_PROFILE_ID: &str = "llm-harness-usage-report";
+pub const USAGE_REPORT_PROFILE_VERSION: &str = "1";
+pub const USAGE_REPORT_PROFILE_CONTRACT: &str = "provenance=provider_payload;states=reported_valid,missing,reported_invalid;zero_tokens_do_not_imply_missing;reported_valid_requires_billing_invariants";
+pub const USAGE_REPORT_PROFILE_DIGEST: &str =
+    "sha256:f6a776c595f99114eb692faf4f72eb4eb0012a33fa3722244e65fad0d6f48073";
 
 /// Why the model stopped generating.
 ///
@@ -38,6 +43,17 @@ pub enum StopReason {
 /// | `cached_input_tokens` | Yes | Yes | Yes |
 /// | `cache_creation_input_tokens` | No | Yes | No |
 /// | `reasoning_tokens` | Yes (o-series) | Yes (thinking) | Yes (thinking) |
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
+pub enum UsageProvenance {
+    /// The provider did not supply an authoritative usage payload.
+    #[default]
+    Missing,
+    /// The provider supplied usage and all canonical invariants hold.
+    ReportedValid,
+    /// The provider supplied usage, but one or more invariants failed.
+    ReportedInvalid,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Usage {
     /// Gross prompt tokens, including cache reads and cache writes.
@@ -54,9 +70,49 @@ pub struct Usage {
     /// thinking (`output_tokens_details.thinking_tokens`), and DeepSeek
     /// thinking mode. Always 0 for non-reasoning models.
     pub reasoning_tokens: u32,
+    /// Origin and validity of the usage values. Token totals never imply this
+    /// value: an explicit all-zero payload is `ReportedValid`, while a
+    /// synthesized all-zero fallback is `Missing`.
+    pub provenance: UsageProvenance,
 }
 
 impl Usage {
+    /// A response completed without an authoritative provider usage payload.
+    pub fn missing() -> Self {
+        Self::default()
+    }
+
+    /// Marks these values as provider-reported and derives their validity from
+    /// the canonical billing invariants.
+    pub fn reported(mut self) -> Self {
+        self.provenance = if self.validate_billing_profile().is_ok() {
+            UsageProvenance::ReportedValid
+        } else {
+            UsageProvenance::ReportedInvalid
+        };
+        self
+    }
+
+    /// Marks provider-reported values invalid because a provider-specific
+    /// invariant failed in addition to the canonical numeric invariants.
+    pub fn reported_invalid(mut self) -> Self {
+        self.provenance = UsageProvenance::ReportedInvalid;
+        self
+    }
+
+    /// Requires authoritative, valid provider usage.
+    pub fn validate_report(&self) -> Result<(), BillingUsageProfileError> {
+        match self.provenance {
+            UsageProvenance::ReportedValid => self.validate_billing_profile(),
+            UsageProvenance::Missing => Err(BillingUsageProfileError::new(
+                "provider usage report is missing",
+            )),
+            UsageProvenance::ReportedInvalid => Err(BillingUsageProfileError::new(
+                "provider usage report is invalid",
+            )),
+        }
+    }
+
     /// Returns prompt tokens billed at the normal, non-cache input rate.
     pub fn billable_uncached_input_tokens(&self) -> Result<u32, BillingUsageProfileError> {
         let cached = self
@@ -103,6 +159,36 @@ impl BillingUsageProfileError {
 #[cfg(test)]
 mod billing_profile_tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn billing_profile_digest_matches_the_contract_text() {
+        let digest = format!(
+            "sha256:{:x}",
+            Sha256::digest(BILLING_USAGE_PROFILE_CONTRACT.as_bytes())
+        );
+        assert_eq!(digest, BILLING_USAGE_PROFILE_DIGEST);
+    }
+
+    #[test]
+    fn usage_report_profile_digest_matches_the_contract_text() {
+        let digest = format!(
+            "sha256:{:x}",
+            Sha256::digest(USAGE_REPORT_PROFILE_CONTRACT.as_bytes())
+        );
+        assert_eq!(digest, USAGE_REPORT_PROFILE_DIGEST);
+    }
+
+    #[test]
+    fn missing_and_reported_zero_have_distinct_provenance() {
+        let missing = Usage::missing();
+        let reported_zero = Usage::default().reported();
+
+        assert_eq!(missing.provenance, UsageProvenance::Missing);
+        assert_eq!(reported_zero.provenance, UsageProvenance::ReportedValid);
+        assert!(missing.validate_report().is_err());
+        reported_zero.validate_report().unwrap();
+    }
 
     #[test]
     fn rejects_cache_categories_larger_than_gross_input() {

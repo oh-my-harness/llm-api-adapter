@@ -833,10 +833,9 @@ pub(crate) fn anthropic_usage_to_canonical(u: AnthropicUsage) -> Result<Usage, L
         cached_input_tokens: u.cache_read_input_tokens,
         cache_creation_input_tokens: u.cache_creation_input_tokens,
         reasoning_tokens: u.output_tokens_details.thinking_tokens,
-    };
-    usage
-        .validate_billing_profile()
-        .map_err(|error| invalid_usage(error.to_string()))?;
+        provenance: crate::types::UsageProvenance::Missing,
+    }
+    .reported();
     Ok(usage)
 }
 

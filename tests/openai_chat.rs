@@ -28,8 +28,47 @@ async fn simple_chat_returns_text() {
     assert!(matches!(resp.stop_reason, StopReason::EndTurn));
     assert!(resp.usage.input_tokens > 0);
     assert!(resp.usage.output_tokens > 0);
+    assert_eq!(resp.usage.provenance, UsageProvenance::ReportedValid);
     // Simple scenario records with thinking disabled — no reasoning content.
     assert!(resp.reasoning().is_none());
+}
+
+#[tokio::test]
+async fn missing_usage_is_not_reported_as_authoritative_zero() {
+    let server = MockServer::start().await;
+    common::mock_chat(
+        &server,
+        include_str!("fixtures/openai/chat_missing_usage.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hello".into())]))
+        .build();
+    let usage = provider(&server).chat(&req).await.unwrap().usage;
+
+    assert_eq!(usage.input_tokens, 0);
+    assert_eq!(usage.output_tokens, 0);
+    assert_eq!(usage.provenance, UsageProvenance::Missing);
+}
+
+#[tokio::test]
+async fn explicit_zero_usage_remains_an_authoritative_report() {
+    let server = MockServer::start().await;
+    common::mock_chat(
+        &server,
+        include_str!("fixtures/openai/chat_zero_usage.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hello".into())]))
+        .build();
+    let usage = provider(&server).chat(&req).await.unwrap().usage;
+
+    assert_eq!(usage.input_tokens, 0);
+    assert_eq!(usage.output_tokens, 0);
+    assert_eq!(usage.provenance, UsageProvenance::ReportedValid);
 }
 
 #[tokio::test]
@@ -50,6 +89,7 @@ async fn cached_usage_obeys_the_canonical_billing_profile() {
     assert_eq!(usage.cached_input_tokens, 400);
     assert_eq!(usage.cache_creation_input_tokens, 0);
     assert_eq!(usage.billable_uncached_input_tokens().unwrap(), 600);
+    assert_eq!(usage.provenance, UsageProvenance::ReportedValid);
     usage.validate_billing_profile().unwrap();
 }
 

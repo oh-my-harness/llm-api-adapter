@@ -688,6 +688,20 @@ Canonical `Usage` follows the versioned profile exposed by
   subset and is not added again for billing.
 - `Usage::validate_billing_profile()` rejects contradictory provider usage.
 
+Usage-report completeness is a separate versioned contract exposed by
+`USAGE_REPORT_PROFILE_ID`, `USAGE_REPORT_PROFILE_VERSION`, and
+`USAGE_REPORT_PROFILE_DIGEST`. `Usage.provenance` distinguishes:
+
+- `ReportedValid`: the provider supplied usage and canonical invariants hold;
+- `Missing`: the response completed without provider usage;
+- `ReportedInvalid`: the provider supplied usage but an invariant failed.
+
+Token values never infer provenance. In particular, an explicit all-zero
+provider payload is `ReportedValid`, while an all-zero fallback is `Missing`.
+The adapter preserves all three states for downstream policy: ordinary
+non-priced consumers may retain the response, while trusted-pricing consumers
+must require `Usage::validate_report()` to succeed.
+
 OpenAI cached-token details and DeepSeek cache hit/miss fields are normalized to
 this profile. Anthropic's three exclusive wire input categories are summed into
 canonical gross input. Downstream billing must price uncached input, cache read,

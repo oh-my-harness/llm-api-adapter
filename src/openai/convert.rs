@@ -467,7 +467,10 @@ pub(crate) fn from_oai(resp: OaiResponse, parse_reasoning: bool) -> Result<ChatR
     let choice = &resp.choices[0];
     let content = oai_message_to_content(choice.message.clone(), parse_reasoning)?;
     let stop_reason = parse_stop_reason(choice.finish_reason.as_deref());
-    let usage = oai_usage_to_canonical(resp.usage.unwrap_or_default(), parse_reasoning)?;
+    let usage = match resp.usage {
+        Some(usage) => oai_usage_to_canonical(usage, parse_reasoning)?,
+        None => Usage::missing(),
+    };
 
     Ok(ChatResponse {
         id: resp.id,
@@ -547,11 +550,11 @@ pub(crate) fn oai_usage_to_canonical(
         .as_ref()
         .map(|details| details.cached_tokens);
     let deepseek_cached = u.prompt_cache_hit_tokens;
+    let mut provider_invariants_valid = true;
     let cached_input_tokens = match (openai_cached, deepseek_cached) {
         (Some(openai), Some(deepseek)) if openai != 0 && deepseek != 0 && openai != deepseek => {
-            return Err(invalid_usage(format!(
-                "OpenAI cached_tokens ({openai}) disagree with DeepSeek prompt_cache_hit_tokens ({deepseek})"
-            )));
+            provider_invariants_valid = false;
+            openai.max(deepseek)
         }
         (Some(openai), Some(deepseek)) => openai.max(deepseek),
         (Some(openai), None) => openai,
@@ -564,10 +567,7 @@ pub(crate) fn oai_usage_to_canonical(
             .checked_add(cache_miss)
             .ok_or_else(|| invalid_usage("DeepSeek cache hit plus miss token count overflows"))?;
         if classified != u.prompt_tokens {
-            return Err(invalid_usage(format!(
-                "DeepSeek prompt_tokens ({}) do not equal cache hit plus miss tokens ({classified})",
-                u.prompt_tokens
-            )));
+            provider_invariants_valid = false;
         }
     }
 
@@ -584,11 +584,14 @@ pub(crate) fn oai_usage_to_canonical(
         cached_input_tokens,
         cache_creation_input_tokens: 0,
         reasoning_tokens,
-    };
-    usage
-        .validate_billing_profile()
-        .map_err(|error| invalid_usage(error.to_string()))?;
-    Ok(usage)
+        provenance: crate::types::UsageProvenance::Missing,
+    }
+    .reported();
+    Ok(if provider_invariants_valid {
+        usage
+    } else {
+        usage.reported_invalid()
+    })
 }
 
 fn invalid_usage(message: impl Into<String>) -> LlmError {
@@ -607,7 +610,7 @@ mod tests {
     };
 
     #[test]
-    fn deepseek_usage_rejects_hit_miss_total_mismatch() {
+    fn deepseek_usage_marks_hit_miss_total_mismatch_invalid() {
         let usage = OaiUsage {
             prompt_tokens: 1_000,
             completion_tokens: 500,
@@ -616,8 +619,12 @@ mod tests {
             ..Default::default()
         };
 
-        let error = oai_usage_to_canonical(usage, false).unwrap_err();
-        assert!(error.to_string().contains("cache hit plus miss"));
+        let usage = oai_usage_to_canonical(usage, false).unwrap();
+        assert_eq!(
+            usage.provenance,
+            crate::types::UsageProvenance::ReportedInvalid
+        );
+        assert!(usage.validate_report().is_err());
     }
 
     #[test]

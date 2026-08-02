@@ -178,7 +178,7 @@ pub fn process_event(
             // Build usage from initial_message with updated output_tokens and
             // thinking_tokens from the final message_delta event.
             let usage = state.initial_message.as_ref().map_or_else(
-                || Ok(crate::types::Usage::default()),
+                || Ok(crate::types::Usage::missing()),
                 |msg| {
                     let mut u = msg.usage.clone();
                     u.output_tokens = state.output_tokens;

@@ -1,0 +1,1 @@
+{"id":"ds-invalid-usage","choices":[{"finish_reason":"stop","index":0,"message":{"content":"ok","role":"assistant"}}],"created":1785686400,"model":"deepseek-chat","object":"chat.completion","usage":{"completion_tokens":20,"prompt_tokens":100,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":30,"total_tokens":120}}

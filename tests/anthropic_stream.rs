@@ -31,6 +31,31 @@ async fn stream_simple_collects_to_response() {
     assert!(matches!(resp.stop_reason, StopReason::EndTurn));
     assert!(resp.usage.input_tokens > 0);
     assert!(resp.usage.output_tokens > 0);
+    assert_eq!(resp.usage.provenance, UsageProvenance::ReportedValid);
+}
+
+#[tokio::test]
+async fn stream_without_message_start_marks_usage_missing() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_stream(
+        &server,
+        include_str!("fixtures/anthropic/stream_missing_message_start.txt"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("claude-sonnet-4-6", 256)
+        .message(Message::User(vec![RequestContent::Text("Say hi".into())]))
+        .build();
+    let response = provider(&server)
+        .chat_stream(&req)
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    assert_eq!(response.text(), "hi");
+    assert_eq!(response.usage.provenance, UsageProvenance::Missing);
 }
 
 #[tokio::test]

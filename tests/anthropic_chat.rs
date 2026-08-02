@@ -52,6 +52,7 @@ async fn anthropic_cache_categories_obey_the_canonical_billing_profile() {
     assert_eq!(usage.cached_input_tokens, 400);
     assert_eq!(usage.cache_creation_input_tokens, 100);
     assert_eq!(usage.billable_uncached_input_tokens().unwrap(), 500);
+    assert_eq!(usage.provenance, UsageProvenance::ReportedValid);
     usage.validate_billing_profile().unwrap();
 }
 
