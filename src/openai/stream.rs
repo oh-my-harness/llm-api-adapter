@@ -91,10 +91,10 @@ pub fn process_chunk(
         state.open_blocks.clear();
 
         let stop_reason = parse_stop_reason(state.pending_stop.as_deref());
-        events.push(Ok(StreamEvent::MessageStop {
-            stop_reason,
-            usage: super::convert::oai_usage_to_canonical(usage, parse_reasoning),
-        }));
+        match super::convert::oai_usage_to_canonical(usage, parse_reasoning) {
+            Ok(usage) => events.push(Ok(StreamEvent::MessageStop { stop_reason, usage })),
+            Err(error) => events.push(Err(error)),
+        }
         state.message_stop_sent = true;
     }
 

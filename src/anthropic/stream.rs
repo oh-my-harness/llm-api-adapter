@@ -177,20 +177,22 @@ pub fn process_event(
 
             // Build usage from initial_message with updated output_tokens and
             // thinking_tokens from the final message_delta event.
-            let usage =
-                state
-                    .initial_message
-                    .as_ref()
-                    .map_or_else(crate::types::Usage::default, |msg| {
-                        let mut u = msg.usage.clone();
-                        u.output_tokens = state.output_tokens;
-                        u.output_tokens_details = state.output_tokens_details.clone();
-                        anthropic_usage_to_canonical(u)
-                    });
+            let usage = state.initial_message.as_ref().map_or_else(
+                || Ok(crate::types::Usage::default()),
+                |msg| {
+                    let mut u = msg.usage.clone();
+                    u.output_tokens = state.output_tokens;
+                    u.output_tokens_details = state.output_tokens_details.clone();
+                    anthropic_usage_to_canonical(u)
+                },
+            );
 
             let stop_reason = parse_stop_reason(state.pending_stop_reason.as_deref());
 
-            events.push(Ok(StreamEvent::MessageStop { stop_reason, usage }));
+            match usage {
+                Ok(usage) => events.push(Ok(StreamEvent::MessageStop { stop_reason, usage })),
+                Err(error) => events.push(Err(error)),
+            }
         }
 
         AnthropicStreamEvent::Ping => {
@@ -593,10 +595,11 @@ mod tests {
         match &e[0] {
             Ok(StreamEvent::MessageStop { stop_reason, usage }) => {
                 assert!(matches!(stop_reason, StopReason::EndTurn));
-                assert_eq!(usage.input_tokens, 15);
+                assert_eq!(usage.input_tokens, 20);
                 assert_eq!(usage.output_tokens, 50);
                 assert_eq!(usage.cache_creation_input_tokens, 3);
                 assert_eq!(usage.cached_input_tokens, 2);
+                assert_eq!(usage.billable_uncached_input_tokens().unwrap(), 15);
             }
             other => panic!("expected MessageStop, got {other:?}"),
         }

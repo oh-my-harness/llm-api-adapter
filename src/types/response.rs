@@ -1,5 +1,11 @@
 use super::content::{ResponseContent, ToolInvocation};
 
+pub const BILLING_USAGE_PROFILE_ID: &str = "llm-harness-billing-usage";
+pub const BILLING_USAGE_PROFILE_VERSION: &str = "1";
+pub const BILLING_USAGE_PROFILE_CONTRACT: &str = "input_tokens=gross_input;cache_read_tokens=input_subset;cache_creation_input_tokens=input_subset;cache_read_and_creation=disjoint;output_tokens=gross_output;reasoning_tokens=output_subset;uncached_input=input_tokens-cache_read_tokens-cache_creation_input_tokens";
+pub const BILLING_USAGE_PROFILE_DIGEST: &str =
+    "sha256:6afb4df926d32f3917ab28fb7ea30af87b20d7b81391d800c076f637c7eb73fb";
+
 /// Why the model stopped generating.
 ///
 /// Each variant corresponds to a termination condition that the model or
@@ -34,7 +40,7 @@ pub enum StopReason {
 /// | `reasoning_tokens` | Yes (o-series) | Yes (thinking) | Yes (thinking) |
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Usage {
-    /// Tokens in the prompt (input / request).
+    /// Gross prompt tokens, including cache reads and cache writes.
     pub input_tokens: u32,
     /// Tokens generated (output / completion).
     pub output_tokens: u32,
@@ -48,6 +54,80 @@ pub struct Usage {
     /// thinking (`output_tokens_details.thinking_tokens`), and DeepSeek
     /// thinking mode. Always 0 for non-reasoning models.
     pub reasoning_tokens: u32,
+}
+
+impl Usage {
+    /// Returns prompt tokens billed at the normal, non-cache input rate.
+    pub fn billable_uncached_input_tokens(&self) -> Result<u32, BillingUsageProfileError> {
+        let cached = self
+            .cached_input_tokens
+            .checked_add(self.cache_creation_input_tokens)
+            .ok_or_else(|| {
+                BillingUsageProfileError::new("cache input token categories overflow")
+            })?;
+        self.input_tokens.checked_sub(cached).ok_or_else(|| {
+            BillingUsageProfileError::new(format!(
+                "gross input tokens ({}) are smaller than cache read plus cache creation tokens ({cached})",
+                self.input_tokens
+            ))
+        })
+    }
+
+    /// Validates the canonical gross-plus-exclusive-cache billing profile.
+    pub fn validate_billing_profile(&self) -> Result<(), BillingUsageProfileError> {
+        self.billable_uncached_input_tokens()?;
+        if self.reasoning_tokens > self.output_tokens {
+            return Err(BillingUsageProfileError::new(format!(
+                "reasoning tokens ({}) exceed gross output tokens ({})",
+                self.reasoning_tokens, self.output_tokens
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
+#[error("{message}")]
+pub struct BillingUsageProfileError {
+    message: String,
+}
+
+impl BillingUsageProfileError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod billing_profile_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_cache_categories_larger_than_gross_input() {
+        let usage = Usage {
+            input_tokens: 100,
+            cached_input_tokens: 80,
+            cache_creation_input_tokens: 30,
+            ..Default::default()
+        };
+
+        let error = usage.validate_billing_profile().unwrap_err();
+        assert!(error.to_string().contains("smaller than cache read"));
+    }
+
+    #[test]
+    fn rejects_reasoning_larger_than_gross_output() {
+        let usage = Usage {
+            output_tokens: 20,
+            reasoning_tokens: 21,
+            ..Default::default()
+        };
+
+        let error = usage.validate_billing_profile().unwrap_err();
+        assert!(error.to_string().contains("exceed gross output"));
+    }
 }
 
 /// A complete (non-streaming) response from the model.

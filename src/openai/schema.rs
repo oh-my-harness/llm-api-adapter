@@ -187,9 +187,13 @@ pub(crate) struct OaiUsage {
     /// Detailed completion token breakdown (OpenAI: includes reasoning_tokens).
     #[serde(default)]
     pub completion_tokens_details: Option<OaiCompletionTokensDetails>,
-    /// DeepSeek cache hit tokens.
+    /// DeepSeek cache hit tokens. Presence distinguishes the wire extension
+    /// from an OpenAI response with no cache detail.
     #[serde(default)]
-    pub prompt_cache_hit_tokens: u32,
+    pub prompt_cache_hit_tokens: Option<u32>,
+    /// DeepSeek cache miss tokens.
+    #[serde(default)]
+    pub prompt_cache_miss_tokens: Option<u32>,
 }
 
 /// Detailed breakdown of prompt tokens.

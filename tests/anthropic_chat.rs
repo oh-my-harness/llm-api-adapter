@@ -35,6 +35,27 @@ async fn simple_chat_returns_response() {
 }
 
 #[tokio::test]
+async fn anthropic_cache_categories_obey_the_canonical_billing_profile() {
+    let server = MockServer::start().await;
+    common::mock_anthropic_chat(
+        &server,
+        include_str!("fixtures/anthropic/chat_cached_usage.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("claude-sonnet-4-6", 512)
+        .message(Message::User(vec![RequestContent::Text("Hello".into())]))
+        .build();
+    let usage = provider(&server).chat(&req).await.unwrap().usage;
+
+    assert_eq!(usage.input_tokens, 1_000);
+    assert_eq!(usage.cached_input_tokens, 400);
+    assert_eq!(usage.cache_creation_input_tokens, 100);
+    assert_eq!(usage.billable_uncached_input_tokens().unwrap(), 500);
+    usage.validate_billing_profile().unwrap();
+}
+
+#[tokio::test]
 async fn chat_returns_tool_call() {
     let server = MockServer::start().await;
     common::mock_anthropic_chat(

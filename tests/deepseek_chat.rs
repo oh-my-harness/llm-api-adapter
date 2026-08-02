@@ -29,6 +29,27 @@ async fn deepseek_simple_chat() {
 }
 
 #[tokio::test]
+async fn deepseek_cache_hit_and_miss_obey_the_canonical_billing_profile() {
+    let server = MockServer::start().await;
+    common::mock_chat(
+        &server,
+        include_str!("fixtures/deepseek/chat_cached_usage.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("deepseek-chat", 512)
+        .message(Message::User(vec![RequestContent::Text("Hello".into())]))
+        .build();
+    let usage = provider(&server).chat(&req).await.unwrap().usage;
+
+    assert_eq!(usage.input_tokens, 1_000);
+    assert_eq!(usage.cached_input_tokens, 400);
+    assert_eq!(usage.cache_creation_input_tokens, 0);
+    assert_eq!(usage.billable_uncached_input_tokens().unwrap(), 600);
+    usage.validate_billing_profile().unwrap();
+}
+
+#[tokio::test]
 async fn deepseek_reasoning_response() {
     let server = MockServer::start().await;
     common::mock_chat(

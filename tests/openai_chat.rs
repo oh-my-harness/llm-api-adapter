@@ -33,6 +33,27 @@ async fn simple_chat_returns_text() {
 }
 
 #[tokio::test]
+async fn cached_usage_obeys_the_canonical_billing_profile() {
+    let server = MockServer::start().await;
+    common::mock_chat(
+        &server,
+        include_str!("fixtures/openai/chat_cached_usage.json"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("gpt-4o-mini-2024-07-18", 512)
+        .message(Message::User(vec![RequestContent::Text("Hello".into())]))
+        .build();
+    let usage = provider(&server).chat(&req).await.unwrap().usage;
+
+    assert_eq!(usage.input_tokens, 1_000);
+    assert_eq!(usage.cached_input_tokens, 400);
+    assert_eq!(usage.cache_creation_input_tokens, 0);
+    assert_eq!(usage.billable_uncached_input_tokens().unwrap(), 600);
+    usage.validate_billing_profile().unwrap();
+}
+
+#[tokio::test]
 async fn chat_returns_tool_call() {
     let server = MockServer::start().await;
     common::mock_chat(&server, include_str!("fixtures/openai/chat_tool_call.json")).await;

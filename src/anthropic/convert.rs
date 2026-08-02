@@ -758,7 +758,7 @@ pub(crate) fn from_anthropic(resp: AnthropicResponse) -> Result<ChatResponse, Ll
         .collect();
 
     let stop_reason = parse_anthropic_stop_reason(resp.stop_reason.as_deref());
-    let usage = anthropic_usage_to_canonical(resp.usage);
+    let usage = anthropic_usage_to_canonical(resp.usage)?;
 
     Ok(ChatResponse {
         id: resp.id,
@@ -821,13 +821,29 @@ fn parse_anthropic_stop_reason(s: Option<&str>) -> StopReason {
 }
 
 /// Convert AnthropicUsage to canonical Usage.
-pub(crate) fn anthropic_usage_to_canonical(u: AnthropicUsage) -> Usage {
-    Usage {
-        input_tokens: u.input_tokens,
+pub(crate) fn anthropic_usage_to_canonical(u: AnthropicUsage) -> Result<Usage, LlmError> {
+    let input_tokens = u
+        .input_tokens
+        .checked_add(u.cache_read_input_tokens)
+        .and_then(|tokens| tokens.checked_add(u.cache_creation_input_tokens))
+        .ok_or_else(|| invalid_usage("Anthropic gross input token count overflows"))?;
+    let usage = Usage {
+        input_tokens,
         output_tokens: u.output_tokens,
         cached_input_tokens: u.cache_read_input_tokens,
         cache_creation_input_tokens: u.cache_creation_input_tokens,
         reasoning_tokens: u.output_tokens_details.thinking_tokens,
+    };
+    usage
+        .validate_billing_profile()
+        .map_err(|error| invalid_usage(error.to_string()))?;
+    Ok(usage)
+}
+
+fn invalid_usage(message: impl Into<String>) -> LlmError {
+    LlmError::Provider {
+        code: "invalid_usage".into(),
+        message: message.into(),
     }
 }
 

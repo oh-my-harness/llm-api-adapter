@@ -674,6 +674,25 @@ examples/
 └─ record_fixtures.rs    # regenerate fixtures from live providers
 ```
 
+## Billing usage contract
+
+Canonical `Usage` follows the versioned profile exposed by
+`BILLING_USAGE_PROFILE_ID`, `BILLING_USAGE_PROFILE_VERSION`, and
+`BILLING_USAGE_PROFILE_DIGEST`:
+
+- `input_tokens` is gross input, including cache reads and cache writes.
+- `cached_input_tokens` and `cache_creation_input_tokens` are disjoint input
+  subsets. Normal-rate input is returned by
+  `Usage::billable_uncached_input_tokens()`.
+- `output_tokens` is gross output. `reasoning_tokens` is an informational
+  subset and is not added again for billing.
+- `Usage::validate_billing_profile()` rejects contradictory provider usage.
+
+OpenAI cached-token details and DeepSeek cache hit/miss fields are normalized to
+this profile. Anthropic's three exclusive wire input categories are summed into
+canonical gross input. Downstream billing must price uncached input, cache read,
+cache write, and gross output exactly once.
+
 ## Known limitations
 
 - **Azure OpenAI** not supported (different auth header + deployment paths).
