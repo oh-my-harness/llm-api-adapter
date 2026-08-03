@@ -1,5 +1,5 @@
 use crate::{error::LlmError, types::*};
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, future::ready};
 use std::collections::HashMap;
 
 type BoxStream = futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>;
@@ -37,7 +37,7 @@ impl StreamHandle {
         Self {
             id: String::new(),
             model: model.into(),
-            inner,
+            inner: first_terminal_stream(inner),
             status_code,
             latency_ms,
         }
@@ -139,6 +139,7 @@ impl StreamHandle {
                     stop_reason = sr;
                     usage = u;
                     message_stop_received = true;
+                    break;
                 }
             }
         }
@@ -189,5 +190,74 @@ impl StreamHandle {
             stop_reason,
             usage,
         })
+    }
+}
+
+fn first_terminal_stream(inner: BoxStream) -> BoxStream {
+    inner
+        .scan(false, |terminated, event| {
+            if *terminated {
+                return ready(None);
+            }
+            if event.is_err() || matches!(&event, Ok(StreamEvent::MessageStop { .. })) {
+                *terminated = true;
+            }
+            ready(Some(event))
+        })
+        .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::stream;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    fn terminal(usage: Usage) -> Result<StreamEvent, LlmError> {
+        Ok(StreamEvent::MessageStop {
+            stop_reason: StopReason::EndTurn,
+            usage,
+        })
+    }
+
+    #[tokio::test]
+    async fn collect_keeps_the_first_terminal_usage() {
+        let invalid = Usage::default().reported_invalid();
+        let valid = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Default::default()
+        }
+        .reported();
+        let handle = StreamHandle::from_raw_stream(
+            "model",
+            Box::pin(stream::iter([terminal(invalid.clone()), terminal(valid)])),
+        );
+
+        let response = handle.collect().await.expect("first terminal completes");
+
+        assert_eq!(response.usage, invalid);
+    }
+
+    #[tokio::test]
+    async fn collect_never_polls_the_transport_after_message_stop() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed = polls.clone();
+        let source = stream::poll_fn(move |_| match observed.fetch_add(1, Ordering::SeqCst) {
+            0 => std::task::Poll::Ready(Some(terminal(Usage::default().reported()))),
+            _ => panic!("transport was polled after MessageStop"),
+        });
+        let handle = StreamHandle::from_raw_stream("model", Box::pin(source));
+
+        let response = handle
+            .collect()
+            .await
+            .expect("terminal completes immediately");
+
+        assert_eq!(response.usage.provenance, UsageProvenance::ReportedValid);
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
     }
 }

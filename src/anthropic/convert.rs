@@ -825,10 +825,9 @@ pub(crate) fn anthropic_usage_to_canonical(u: AnthropicUsage) -> Result<Usage, L
     let input_tokens = u
         .input_tokens
         .checked_add(u.cache_read_input_tokens)
-        .and_then(|tokens| tokens.checked_add(u.cache_creation_input_tokens))
-        .ok_or_else(|| invalid_usage("Anthropic gross input token count overflows"))?;
+        .and_then(|tokens| tokens.checked_add(u.cache_creation_input_tokens));
     let usage = Usage {
-        input_tokens,
+        input_tokens: input_tokens.unwrap_or_default(),
         output_tokens: u.output_tokens,
         cached_input_tokens: u.cache_read_input_tokens,
         cache_creation_input_tokens: u.cache_creation_input_tokens,
@@ -836,14 +835,11 @@ pub(crate) fn anthropic_usage_to_canonical(u: AnthropicUsage) -> Result<Usage, L
         provenance: crate::types::UsageProvenance::Missing,
     }
     .reported();
-    Ok(usage)
-}
-
-fn invalid_usage(message: impl Into<String>) -> LlmError {
-    LlmError::Provider {
-        code: "invalid_usage".into(),
-        message: message.into(),
-    }
+    Ok(if input_tokens.is_some() {
+        usage
+    } else {
+        usage.reported_invalid()
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -854,6 +850,25 @@ mod tests {
     use crate::types::{
         ImageSource, RequestContent as RC, ResponseContent as RespC, ToolDef, ToolInvocation as TI,
     };
+
+    #[test]
+    fn anthropic_usage_overflow_is_a_completed_invalid_report() {
+        let usage = AnthropicUsage {
+            input_tokens: u32::MAX,
+            cache_read_input_tokens: 1,
+            output_tokens: 2,
+            ..Default::default()
+        };
+
+        let usage = anthropic_usage_to_canonical(usage)
+            .expect("parsed provider usage must remain completed-call evidence");
+
+        assert_eq!(
+            usage.provenance,
+            crate::types::UsageProvenance::ReportedInvalid
+        );
+        assert!(usage.validate_report().is_err());
+    }
 
     #[test]
     fn ext_builder_defaults() {

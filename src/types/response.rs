@@ -6,10 +6,10 @@ pub const BILLING_USAGE_PROFILE_CONTRACT: &str = "input_tokens=gross_input;cache
 pub const BILLING_USAGE_PROFILE_DIGEST: &str =
     "sha256:6afb4df926d32f3917ab28fb7ea30af87b20d7b81391d800c076f637c7eb73fb";
 pub const USAGE_REPORT_PROFILE_ID: &str = "llm-harness-usage-report";
-pub const USAGE_REPORT_PROFILE_VERSION: &str = "1";
-pub const USAGE_REPORT_PROFILE_CONTRACT: &str = "provenance=provider_payload;states=reported_valid,missing,reported_invalid;zero_tokens_do_not_imply_missing;reported_valid_requires_billing_invariants";
+pub const USAGE_REPORT_PROFILE_VERSION: &str = "2";
+pub const USAGE_REPORT_PROFILE_CONTRACT: &str = "provenance=provider_payload;states=reported_valid,missing,reported_invalid;zero_tokens_do_not_imply_missing;reported_valid_requires_billing_invariants;parsed_usage_normalization_failure=reported_invalid;terminal=first_message_stop";
 pub const USAGE_REPORT_PROFILE_DIGEST: &str =
-    "sha256:f6a776c595f99114eb692faf4f72eb4eb0012a33fa3722244e65fad0d6f48073";
+    "sha256:9d9e1d63b51fb44ef06383f1b7e92729404b7729357c25aef2d4d15bfdc288c5";
 
 /// Why the model stopped generating.
 ///

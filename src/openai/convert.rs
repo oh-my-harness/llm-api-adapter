@@ -563,11 +563,9 @@ pub(crate) fn oai_usage_to_canonical(
     };
 
     if let Some(cache_miss) = u.prompt_cache_miss_tokens {
-        let classified = cached_input_tokens
-            .checked_add(cache_miss)
-            .ok_or_else(|| invalid_usage("DeepSeek cache hit plus miss token count overflows"))?;
-        if classified != u.prompt_tokens {
-            provider_invariants_valid = false;
+        match cached_input_tokens.checked_add(cache_miss) {
+            Some(classified) if classified == u.prompt_tokens => {}
+            Some(_) | None => provider_invariants_valid = false,
         }
     }
 
@@ -594,13 +592,6 @@ pub(crate) fn oai_usage_to_canonical(
     })
 }
 
-fn invalid_usage(message: impl Into<String>) -> LlmError {
-    LlmError::Provider {
-        code: "invalid_usage".into(),
-        message: message.into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,6 +611,26 @@ mod tests {
         };
 
         let usage = oai_usage_to_canonical(usage, false).unwrap();
+        assert_eq!(
+            usage.provenance,
+            crate::types::UsageProvenance::ReportedInvalid
+        );
+        assert!(usage.validate_report().is_err());
+    }
+
+    #[test]
+    fn deepseek_usage_overflow_is_a_completed_invalid_report() {
+        let usage = OaiUsage {
+            prompt_tokens: u32::MAX,
+            completion_tokens: 1,
+            prompt_cache_hit_tokens: Some(u32::MAX),
+            prompt_cache_miss_tokens: Some(1),
+            ..Default::default()
+        };
+
+        let usage = oai_usage_to_canonical(usage, false)
+            .expect("parsed provider usage must remain completed-call evidence");
+
         assert_eq!(
             usage.provenance,
             crate::types::UsageProvenance::ReportedInvalid
