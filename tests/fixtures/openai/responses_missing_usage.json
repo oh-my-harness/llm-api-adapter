@@ -1,0 +1,1 @@
+{"id":"resp_fixture_missing","object":"response","created_at":1786060800,"status":"completed","completed_at":1786060801,"error":null,"incomplete_details":null,"model":"gpt-5.6-terra-2026-07-15","output":[{"id":"msg_missing","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"{}","annotations":[]}]}]}

@@ -63,7 +63,8 @@ pub struct Usage {
     /// Prompt tokens served from the provider's cache. Supported by OpenAI
     /// (prompt caching), Anthropic (prompt caching), and DeepSeek (context caching).
     pub cached_input_tokens: u32,
-    /// Tokens written to the Anthropic prompt cache. Always 0 for OpenAI and DeepSeek.
+    /// Tokens written to a provider prompt cache. OpenAI Responses and
+    /// Anthropic may report this category; it remains 0 when unsupported.
     pub cache_creation_input_tokens: u32,
     /// Reasoning/thinking tokens consumed. Populated by OpenAI o-series
     /// (`completion_tokens_details.reasoning_tokens`), Anthropic extended

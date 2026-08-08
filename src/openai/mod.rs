@@ -1,4 +1,5 @@
 pub mod convert;
+pub mod responses;
 pub(crate) mod schema;
 pub(crate) mod stream;
 
@@ -17,6 +18,8 @@ use std::time::Duration;
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
 const DEFAULT_CHAT_PATH: &str = "/v1/chat/completions";
 const DEFAULT_EMBEDDINGS_PATH: &str = "/v1/embeddings";
+const DEFAULT_RESPONSES_PATH: &str = "/v1/responses";
+const DEFAULT_RESPONSES_INPUT_TOKENS_PATH: &str = "/v1/responses/input_tokens";
 
 /// How [`ChatRequest::thinking`](crate::types::ChatRequest::thinking) (a
 /// [`ThinkingLevel`]) is translated to
@@ -59,6 +62,8 @@ pub struct OpenAIProvider {
     base_url: String,
     chat_path: String,
     embeddings_path: String,
+    responses_path: String,
+    responses_input_tokens_path: String,
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
     thinking_scheme: ThinkingScheme,
@@ -74,6 +79,8 @@ pub struct OpenAIProviderBuilder {
     base_url: String,
     chat_path: String,
     embeddings_path: String,
+    responses_path: String,
+    responses_input_tokens_path: String,
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
     thinking_scheme: ThinkingScheme,
@@ -102,6 +109,8 @@ impl OpenAIProvider {
             base_url: DEFAULT_BASE_URL.to_string(),
             chat_path: DEFAULT_CHAT_PATH.to_string(),
             embeddings_path: DEFAULT_EMBEDDINGS_PATH.to_string(),
+            responses_path: DEFAULT_RESPONSES_PATH.to_string(),
+            responses_input_tokens_path: DEFAULT_RESPONSES_INPUT_TOKENS_PATH.to_string(),
             parse_reasoning_content: false,
             tolerant_keepalive: false,
             thinking_scheme: ThinkingScheme::None,
@@ -383,6 +392,18 @@ impl OpenAIProviderBuilder {
         self
     }
 
+    /// Override the Responses API path appended to `base_url`.
+    pub fn responses_path(mut self, path: impl Into<String>) -> Self {
+        self.responses_path = path.into();
+        self
+    }
+
+    /// Override the Responses input-token count path appended to `base_url`.
+    pub fn responses_input_tokens_path(mut self, path: impl Into<String>) -> Self {
+        self.responses_input_tokens_path = path.into();
+        self
+    }
+
     /// Enable parsing of DeepSeek reasoning_content from responses.
     pub fn parse_reasoning_content(mut self, v: bool) -> Self {
         self.parse_reasoning_content = v;
@@ -443,6 +464,8 @@ impl OpenAIProviderBuilder {
             base_url: self.base_url,
             chat_path: self.chat_path,
             embeddings_path: self.embeddings_path,
+            responses_path: self.responses_path,
+            responses_input_tokens_path: self.responses_input_tokens_path,
             thinking_scheme: self.thinking_scheme,
             parse_reasoning_content: self.parse_reasoning_content,
             tolerant_keepalive: self.tolerant_keepalive,

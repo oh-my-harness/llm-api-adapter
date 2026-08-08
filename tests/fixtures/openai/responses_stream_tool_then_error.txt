@@ -1,0 +1,7 @@
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"fc_before_error","type":"function_call","status":"in_progress","call_id":"call_before_error","name":"forbidden_tool","arguments":""}}
+
+event: error
+data: {"type":"error","sequence_number":2,"code":"server_error","message":"stream failed after tool observation"}
+
+: fixture-end

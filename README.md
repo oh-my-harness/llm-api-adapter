@@ -24,8 +24,11 @@ A small, focused library that gives you:
   without polluting the canonical layer
 - Errors normalised across providers (`Unauthorized`, `RateLimit`,
   `Overloaded`, etc.) with `retry_after` exposed where available
-- Offline-testable: every offline test runs against `wiremock` fixtures
-  recorded from real APIs; `cargo test` needs no network and no API key
+- A provider-native OpenAI Responses boundary that derives token counting and
+  execution from one immutable, digest-bound request projection
+- Offline-testable: every offline test runs against recorded or
+  protocol-faithful raw `wiremock` fixtures; `cargo test` needs no network and
+  no API key
 
 ## What it isn't
 
@@ -35,7 +38,7 @@ To keep the surface area honest, this library deliberately does **not** do:
 - Agent loops, prompt templating, conversation persistence
 - Batch API, embeddings, TTS, image generation
 - Azure OpenAI (different auth scheme + deployment-based routing)
-- The stateful OpenAI Responses API
+- OpenAI Responses background polling or conversation persistence
 
 ## Supported providers
 
@@ -85,6 +88,46 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+### OpenAI Responses with bound token counting
+
+The Responses API is intentionally provider-native rather than part of the
+generic `Provider` trait. The same prepared projection produces both the
+`/v1/responses/input_tokens` body and the `/v1/responses` body; response-only
+controls have a separate digest.
+
+```rust
+use llm_adapter::openai::{
+    OpenAIProvider,
+    responses::{
+        OpenAIResponsesResponseControls, OpenAIResponsesTokenProjection,
+        PreparedOpenAIResponse,
+    },
+};
+use serde_json::json;
+
+let projection = OpenAIResponsesTokenProjection::builder(
+    "gpt-5",
+    "Return JSON only.",
+    json!("Repair this policy."),
+)
+.build()?;
+let controls = OpenAIResponsesResponseControls::builder(1_200).build()?;
+let prepared = PreparedOpenAIResponse::new(projection, controls)?;
+
+let provider = OpenAIProvider::builder(api_key).build();
+let count = provider.count_response_input_tokens(&prepared).await?;
+let response = provider.create_response(&prepared).await?;
+assert_eq!(count.projection_digest(), response.receipt().projection_digest());
+```
+
+The transport performs exactly one HTTP attempt. Streaming stops at the first
+terminal event, even if the connection remains open. Receipts preserve request
+ID, configured provider endpoint, requested and returned model identities,
+response ID, usage provenance, and observed tool activity. A configured base
+URL is an identity binding, not remote-provider attestation. Priced callers
+must still require `Usage::validate_report()` and enforce their own trusted
+pricing/admission policy.
 
 ### DeepSeek with one factory call
 
@@ -710,7 +753,8 @@ cache write, and gross output exactly once.
 ## Known limitations
 
 - **Azure OpenAI** not supported (different auth header + deployment paths).
-- **OpenAI Responses API** not supported; only Chat Completions.
+- **OpenAI Responses background mode** is rejected by the synchronous receipt
+  API; background polling is not implemented.
 - **Prompt caching** is observable in `Usage.cached_input_tokens` but not
   proactively triggerable from the canonical layer. Use the native path
   (`AnthropicExt.cache_hints`) for cache-control markers.

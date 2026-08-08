@@ -15,7 +15,7 @@
 - 流式作为一等类型（`StreamHandle`），可按事件迭代，也可折叠成完整响应
 - 一个扩展通道（`OpenAIExt` / `extra_body`），让 provider 特有字段不污染 canonical 层
 - 跨 provider 归一化的错误类型（`Unauthorized`、`RateLimit`、`Overloaded` 等），可获取 `retry_after`
-- 离线可测试：所有离线测试基于从真实 API 录制的 `wiremock` fixture，`cargo test` 无需网络也无需 API key
+- 离线可测试：所有离线测试基于录制或协议一致的原始 `wiremock` fixture，`cargo test` 无需网络也无需 API key
 
 ## 这个库不做什么
 
@@ -26,7 +26,7 @@
 - Structured Output / JSON Schema 强约束
 - Batch API、embedding、TTS、图像生成
 - Azure OpenAI（认证方式不同，路径含 deployment ID）
-- OpenAI 的有状态 Responses API
+- OpenAI Responses 的后台轮询或对话持久化
 
 ## 支持的 provider
 
@@ -563,7 +563,7 @@ examples/
 ## 已知限制
 
 - **Azure OpenAI** 不支持（认证 header 不同 + 基于 deployment 的路径）。
-- **OpenAI Responses API** 不支持；仅 Chat Completions。
+- **OpenAI Responses 后台模式**：同步 receipt API 会拒绝 background 模式；尚未实现后台轮询。
 - **Prompt caching**：可以从 `Usage.cached_input_tokens` 读到命中情况，但 canonical 层暂不提供主动触发。可以通过 native 路径（`AnthropicExt.cache_hints`）添加 cache-control 标记。
 - **Retry / backoff** 未内建。请基于 `LlmError::RateLimit` / `LlmError::Overloaded` 中的 `retry_after` 在应用层处理。
 - **Structured Output**（`response_format: json_schema`）暂未在 canonical 层暴露。当前可通过 `OpenAIExt.extra_body` 传递。
