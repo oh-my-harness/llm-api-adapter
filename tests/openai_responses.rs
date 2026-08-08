@@ -3,12 +3,13 @@ use std::time::Duration;
 use llm_adapter::openai::{
     OpenAIProvider,
     responses::{
-        AttemptState, OpenAIResponsesCachePolicy, OpenAIResponsesConversationState,
-        OpenAIResponsesReasoning, OpenAIResponsesReasoningContext, OpenAIResponsesReasoningEffort,
+        AttemptState, DIGEST_SERIALIZATION_PROFILE, OpenAIResponsesCachePolicy,
+        OpenAIResponsesConversationState, OpenAIResponsesReasoning,
+        OpenAIResponsesReasoningContext, OpenAIResponsesReasoningEffort,
         OpenAIResponsesReasoningMode, OpenAIResponsesResponseControls, OpenAIResponsesServiceTier,
         OpenAIResponsesText, OpenAIResponsesTextVerbosity, OpenAIResponsesTokenProjection,
         OpenAIResponsesToolChoice, OpenAIResponsesTruncation, PreparedOpenAIResponse,
-        ResponsesTerminalStatus,
+        ResponsesTerminalStatus, TOKEN_RELEVANT_REQUEST_PROJECTION_VERSION,
     },
 };
 use llm_adapter::{UsageProvenance, openai::responses::OpenAIResponsesError};
@@ -1293,5 +1294,258 @@ async fn stream_missing_request_id_preserves_terminal_accounting() {
             .expect("known usage")
             .provenance,
         UsageProvenance::ReportedValid
+    );
+}
+
+#[derive(Clone, Copy)]
+enum CollisionLocation {
+    Input,
+    Schema,
+    Tool,
+}
+
+fn set_collision_value(value: &mut Value, location: CollisionLocation, number: u64) {
+    match location {
+        CollisionLocation::Input => value["input"][0]["collision"] = json!(number),
+        CollisionLocation::Schema => value["text"]["format"]["schema"]["collision"] = json!(number),
+        CollisionLocation::Tool => {
+            value["tools"] = json!([{
+                "type": "function",
+                "name": "collision_probe",
+                "parameters": {"collision": number}
+            }]);
+        }
+    }
+}
+
+fn forged_jcs_collision(location: CollisionLocation) -> PreparedOpenAIResponse {
+    const FIRST_COLLIDING_INTEGER: u64 = 9_007_199_254_740_992;
+    const SECOND_COLLIDING_INTEGER: u64 = 9_007_199_254_740_993;
+
+    let call = prepared(false);
+    let mut wire = serde_json::to_value(&call).expect("prepared wire");
+    let mut count_body = call.input_token_count_body().expect("count body");
+
+    set_collision_value(&mut count_body, location, FIRST_COLLIDING_INTEGER);
+    set_collision_value(&mut wire["projection"], location, FIRST_COLLIDING_INTEGER);
+    let digest_input = json!({
+        "digest_serialization_profile": DIGEST_SERIALIZATION_PROFILE,
+        "schema_version": TOKEN_RELEVANT_REQUEST_PROJECTION_VERSION,
+        "wire_body": count_body,
+    });
+    wire["projection_digest"] = Value::String(format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_jcs::to_vec(&digest_input).expect("JCS digest input"))
+    ));
+
+    set_collision_value(&mut wire["projection"], location, SECOND_COLLIDING_INTEGER);
+    serde_json::from_value(wire).expect("forged prepared call")
+}
+
+#[tokio::test]
+async fn jcs_precision_collisions_are_rejected_before_http_for_all_projection_json() {
+    let server = MockServer::start().await;
+    mount_json(
+        &server,
+        "/v1/responses/input_tokens",
+        include_str!("fixtures/openai/responses_input_tokens.json"),
+        "req_collision_must_not_run",
+    )
+    .await;
+
+    for location in [
+        CollisionLocation::Input,
+        CollisionLocation::Schema,
+        CollisionLocation::Tool,
+    ] {
+        provider(&server)
+            .count_response_input_tokens(&forged_jcs_collision(location))
+            .await
+            .expect_err("an unsafe JCS integer must fail before HTTP");
+    }
+
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("request log")
+            .is_empty(),
+        "JCS validation must run before transport"
+    );
+}
+
+#[tokio::test]
+async fn sse_event_name_json_type_and_terminal_status_must_agree() {
+    let server = MockServer::start().await;
+    let response = completed_response_value();
+    let body = format!(
+        "event: response.failed\ndata: {}\n\n",
+        json!({
+            "type": "response.completed",
+            "sequence_number": 17,
+            "response": response,
+        })
+    );
+    mount_sse(
+        &server,
+        Box::leak(body.into_boxed_str()),
+        "req_sse_name_mismatch",
+    )
+    .await;
+
+    let error = provider(&server)
+        .create_response(&prepared(true))
+        .await
+        .expect_err("SSE event name cannot contradict JSON type");
+
+    assert_eq!(error.attempt().state(), AttemptState::TerminalObserved);
+    assert_eq!(
+        error.attempt().response_id(),
+        Some("resp_fixture_completed")
+    );
+    assert_eq!(
+        error
+            .attempt()
+            .terminal_usage()
+            .expect("known terminal usage")
+            .provenance,
+        UsageProvenance::ReportedValid
+    );
+}
+
+#[tokio::test]
+async fn cancelled_terminal_preserves_known_accounting() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["status"] = json!("cancelled");
+    mount_json_value(&server, "/v1/responses", &response, "req_cancelled").await;
+
+    let result = provider(&server).create_response(&prepared(false)).await;
+
+    let result = result.expect("cancelled is a known provider terminal");
+    assert_eq!(
+        result.receipt().usage().provenance,
+        UsageProvenance::ReportedValid
+    );
+}
+
+#[tokio::test]
+async fn malformed_stream_tool_fields_still_leave_a_tool_witness() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "event: response.output_item.added\n",
+        "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,",
+        "\"output_index\":0,\"item\":{\"id\":\"fc_bad_name\",",
+        "\"type\":\"function_call\",\"call_id\":\"call_bad_name\",",
+        "\"name\":42,\"arguments\":\"{}\"}}\n\n",
+    );
+    mount_sse(&server, body, "req_malformed_tool").await;
+
+    let error = provider(&server)
+        .create_response(&prepared(true))
+        .await
+        .expect_err("malformed tool event must fail");
+
+    assert_eq!(error.attempt().observed_tool_events().len(), 1);
+    assert_eq!(
+        error.attempt().observed_tool_events()[0].item_type(),
+        "function_call"
+    );
+}
+
+#[tokio::test]
+async fn oversized_count_response_is_rejected() {
+    let server = MockServer::start().await;
+    let body = json!({
+        "object": "response.input_tokens",
+        "input_tokens": 42,
+        "padding": "x".repeat(9 * 1024 * 1024),
+    });
+    mount_json_value(
+        &server,
+        "/v1/responses/input_tokens",
+        &body,
+        "req_count_huge",
+    )
+    .await;
+
+    provider(&server)
+        .count_response_input_tokens(&prepared(false))
+        .await
+        .expect_err("count response must have a hard byte limit");
+}
+
+#[tokio::test]
+async fn oversized_non_stream_response_is_rejected() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["output"][0]["content"][0]["text"] = json!("x".repeat(9 * 1024 * 1024));
+    mount_json_value(&server, "/v1/responses", &response, "req_response_huge").await;
+
+    provider(&server)
+        .create_response(&prepared(false))
+        .await
+        .expect_err("non-stream response must have a hard byte limit");
+}
+
+#[tokio::test]
+async fn oversized_sse_event_is_rejected() {
+    let server = MockServer::start().await;
+    let response = completed_response_value();
+    let body = format!(
+        concat!(
+            "event: response.output_text.delta\n",
+            "data: {}\n\n",
+            "event: response.completed\n",
+            "data: {}\n\n"
+        ),
+        json!({
+            "type": "response.output_text.delta",
+            "sequence_number": 1,
+            "item_id": "msg_huge",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "x".repeat(2 * 1024 * 1024),
+        }),
+        json!({
+            "type": "response.completed",
+            "sequence_number": 2,
+            "response": response,
+        })
+    );
+    mount_sse(&server, Box::leak(body.into_boxed_str()), "req_sse_huge").await;
+
+    provider(&server)
+        .create_response(&prepared(true))
+        .await
+        .expect_err("an individual SSE event must have a hard byte limit");
+}
+
+#[tokio::test]
+async fn prepared_transport_identity_must_match_actual_provider_timeouts() {
+    let server = MockServer::start().await;
+    mount_json(
+        &server,
+        "/v1/responses/input_tokens",
+        include_str!("fixtures/openai/responses_input_tokens.json"),
+        "req_timeout_mismatch_must_not_run",
+    )
+    .await;
+    let custom_provider = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .request_timeout(Duration::from_millis(321))
+        .build();
+
+    custom_provider
+        .count_response_input_tokens(&prepared(false))
+        .await
+        .expect_err("prepared transport identity must bind the actual request timeout");
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("request log")
+            .is_empty(),
+        "transport mismatch must fail before HTTP"
     );
 }
