@@ -59,6 +59,7 @@ pub enum ThinkingScheme {
 pub struct OpenAIProvider {
     client: reqwest::Client,
     responses_client: reqwest::Client,
+    responses_transport_profile: responses::OpenAIResponsesTransportProfile,
     api_key: String,
     base_url: String,
     chat_path: String,
@@ -89,6 +90,7 @@ pub struct OpenAIProviderBuilder {
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
     request_timeout: Option<Duration>,
+    responses_resource_limits: responses::OpenAIResponsesResourceLimits,
 }
 
 fn extract_retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
@@ -117,13 +119,25 @@ fn http_client_builder(
 }
 
 fn strict_responses_client_builder(
-    connect_timeout: Duration,
-    read_timeout: Duration,
-    request_timeout: Option<Duration>,
+    profile: &responses::OpenAIResponsesTransportProfile,
 ) -> reqwest::ClientBuilder {
-    http_client_builder(connect_timeout, read_timeout, request_timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .retry(reqwest::retry::never())
+    http_client_builder(
+        profile
+            .connect_timeout()
+            .as_duration()
+            .expect("validated Responses connect timeout"),
+        profile
+            .read_timeout()
+            .as_duration()
+            .expect("validated Responses read timeout"),
+        profile.request_timeout().map(|timeout| {
+            timeout
+                .as_duration()
+                .expect("validated Responses request timeout")
+        }),
+    )
+    .redirect(reqwest::redirect::Policy::none())
+    .retry(reqwest::retry::never())
 }
 
 impl OpenAIProvider {
@@ -148,6 +162,7 @@ impl OpenAIProvider {
             connect_timeout: None,
             read_timeout: None,
             request_timeout: None,
+            responses_resource_limits: responses::OpenAIResponsesResourceLimits::bounded(),
         }
     }
 
@@ -473,22 +488,36 @@ impl OpenAIProviderBuilder {
         self
     }
 
+    /// Set hard memory and observation limits for the direct Responses transport.
+    /// Chat Completions and Embeddings are unaffected.
+    pub fn responses_resource_limits(
+        mut self,
+        limits: responses::OpenAIResponsesResourceLimits,
+    ) -> Self {
+        self.responses_resource_limits = limits;
+        self
+    }
+
     /// Build the OpenAIProvider instance.
     pub fn build(self) -> OpenAIProvider {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
         let read_timeout = self.read_timeout.unwrap_or(Duration::from_secs(60));
         let request_timeout = self.request_timeout;
+        let responses_transport_profile = responses::OpenAIResponsesTransportProfile::strict(
+            connect_timeout,
+            read_timeout,
+            request_timeout,
+            self.responses_resource_limits,
+        )
+        .expect("invalid strict Responses transport profile");
         OpenAIProvider {
             client: http_client_builder(connect_timeout, read_timeout, request_timeout)
                 .build()
                 .expect("failed to build HTTP client"),
-            responses_client: strict_responses_client_builder(
-                connect_timeout,
-                read_timeout,
-                request_timeout,
-            )
-            .build()
-            .expect("failed to build strict Responses HTTP client"),
+            responses_client: strict_responses_client_builder(&responses_transport_profile)
+                .build()
+                .expect("failed to build strict Responses HTTP client"),
+            responses_transport_profile,
             api_key: self.api_key,
             base_url: self.base_url,
             chat_path: self.chat_path,
@@ -542,6 +571,9 @@ impl EmbeddingProvider for OpenAIProvider {
 #[cfg(test)]
 mod tests {
     use super::strict_responses_client_builder;
+    use crate::openai::responses::{
+        OpenAIResponsesResourceLimits, OpenAIResponsesTransportProfile,
+    };
     use bytes::Bytes;
     use h2::Reason;
     use http::Response;
@@ -586,15 +618,18 @@ mod tests {
                 });
             }
         });
-        let client = strict_responses_client_builder(
+        let profile = OpenAIResponsesTransportProfile::strict(
             Duration::from_secs(1),
             Duration::from_secs(1),
             Some(Duration::from_secs(2)),
+            OpenAIResponsesResourceLimits::bounded(),
         )
-        .http2_prior_knowledge()
-        .no_proxy()
-        .build()
-        .expect("strict h2 client");
+        .expect("strict transport profile");
+        let client = strict_responses_client_builder(&profile)
+            .http2_prior_knowledge()
+            .no_proxy()
+            .build()
+            .expect("strict h2 client");
 
         let error = client
             .post(format!("http://{address}/v1/responses"))

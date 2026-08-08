@@ -6,7 +6,8 @@ use llm_adapter::openai::{
         AttemptState, DIGEST_SERIALIZATION_PROFILE, OpenAIResponsesCachePolicy,
         OpenAIResponsesConversationState, OpenAIResponsesReasoning,
         OpenAIResponsesReasoningContext, OpenAIResponsesReasoningEffort,
-        OpenAIResponsesReasoningMode, OpenAIResponsesResponseControls, OpenAIResponsesServiceTier,
+        OpenAIResponsesReasoningMode, OpenAIResponsesResourceLimitKind,
+        OpenAIResponsesResourceLimits, OpenAIResponsesResponseControls, OpenAIResponsesServiceTier,
         OpenAIResponsesText, OpenAIResponsesTextVerbosity, OpenAIResponsesTokenProjection,
         OpenAIResponsesToolChoice, OpenAIResponsesTruncation, PreparedOpenAIResponse,
         ResponsesTerminalStatus, TOKEN_RELEVANT_REQUEST_PROJECTION_VERSION,
@@ -488,9 +489,12 @@ async fn timeout_is_indeterminate_and_never_retried() {
         .base_url(server.uri())
         .request_timeout(Duration::from_millis(25))
         .build();
+    let call = provider
+        .prepare_response(projection(), prepared(false).controls().clone())
+        .expect("provider-bound call");
 
     let error = provider
-        .create_response(&prepared(false))
+        .create_response(&call)
         .await
         .expect_err("request must time out");
 
@@ -722,12 +726,12 @@ async fn prepared_call_binds_canonical_transport_policy_and_jcs_profile() {
     );
 
     let mut wire = serde_json::to_value(&call).expect("prepared wire");
-    wire["transport_policy"]["max_http_attempts"] = json!(2);
+    wire["transport_profile"]["max_http_attempts"] = json!(2);
     let forged_digest_input = json!({
-        "digest_serialization_profile": "rfc8785-jcs/v1",
-        "transport_policy": wire["transport_policy"].clone(),
+        "digest_serialization_profile": DIGEST_SERIALIZATION_PROFILE,
+        "transport_profile": wire["transport_profile"].clone(),
     });
-    wire["transport_policy_digest"] = Value::String(format!(
+    wire["transport_profile_digest"] = Value::String(format!(
         "sha256:{:x}",
         Sha256::digest(serde_jcs::to_vec(&forged_digest_input).expect("JCS"))
     ));
@@ -744,15 +748,15 @@ async fn prepared_call_binds_canonical_transport_policy_and_jcs_profile() {
 #[tokio::test]
 async fn direct_predecessor_request_contract_versions_are_rejected_before_http() {
     for (pointer, predecessor) in [
-        ("/schema_version", "openai-prepared-response/v1"),
+        ("/schema_version", "openai-prepared-response/v2"),
         (
             "/projection/schema_version",
-            "openai-responses-token-relevant-request-projection/v1",
+            "openai-responses-token-relevant-request-projection/v2",
         ),
         ("/controls/schema_version", "openai-responses-controls/v1"),
         (
-            "/transport_policy/schema_version",
-            "openai-responses-transport-policy/v0",
+            "/transport_profile/schema_version",
+            "openai-responses-transport-profile/v1",
         ),
     ] {
         let server = MockServer::start().await;
@@ -765,6 +769,26 @@ async fn direct_predecessor_request_contract_versions_are_rejected_before_http()
             .create_response(&old)
             .await
             .expect_err("direct predecessor contract must fail");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn malformed_transport_timeout_is_rejected_before_http_without_panicking() {
+    for field in ["connect_timeout", "read_timeout", "request_timeout"] {
+        let server = MockServer::start().await;
+        let mut wire = serde_json::to_value(prepared(false)).expect("prepared wire");
+        wire["transport_profile"][field] = json!({
+            "seconds": u64::MAX,
+            "nanoseconds": u32::MAX,
+        });
+        let malformed: PreparedOpenAIResponse =
+            serde_json::from_value(wire).expect("typed malformed timeout");
+
+        provider(&server)
+            .create_response(&malformed)
+            .await
+            .expect_err("malformed timeout must be a validation error");
         assert!(server.received_requests().await.unwrap().is_empty());
     }
 }
@@ -1399,6 +1423,12 @@ async fn sse_event_name_json_type_and_terminal_status_must_agree() {
         .expect_err("SSE event name cannot contradict JSON type");
 
     assert_eq!(error.attempt().state(), AttemptState::TerminalObserved);
+    assert_eq!(error.attempt().stream_event_name(), Some("response.failed"));
+    assert_eq!(
+        error.attempt().stream_json_type(),
+        Some("response.completed")
+    );
+    assert_eq!(error.attempt().stream_sequence_number(), Some(17));
     assert_eq!(
         error.attempt().response_id(),
         Some("resp_fixture_completed")
@@ -1423,6 +1453,10 @@ async fn cancelled_terminal_preserves_known_accounting() {
     let result = provider(&server).create_response(&prepared(false)).await;
 
     let result = result.expect("cancelled is a known provider terminal");
+    assert_eq!(
+        result.receipt().terminal_status(),
+        ResponsesTerminalStatus::Cancelled
+    );
     assert_eq!(
         result.receipt().usage().provenance,
         UsageProvenance::ReportedValid
@@ -1451,6 +1485,7 @@ async fn malformed_stream_tool_fields_still_leave_a_tool_witness() {
         error.attempt().observed_tool_events()[0].item_type(),
         "function_call"
     );
+    assert!(error.attempt().observed_tool_events()[0].malformed());
 }
 
 #[tokio::test]
@@ -1469,10 +1504,19 @@ async fn oversized_count_response_is_rejected() {
     )
     .await;
 
-    provider(&server)
+    let error = provider(&server)
         .count_response_input_tokens(&prepared(false))
         .await
         .expect_err("count response must have a hard byte limit");
+    assert_eq!(error.attempt().state(), AttemptState::OutcomeUnknown);
+    assert_eq!(
+        error
+            .attempt()
+            .resource_limit()
+            .expect("typed limit")
+            .kind(),
+        OpenAIResponsesResourceLimitKind::JsonResponseBytes
+    );
 }
 
 #[tokio::test]
@@ -1482,10 +1526,19 @@ async fn oversized_non_stream_response_is_rejected() {
     response["output"][0]["content"][0]["text"] = json!("x".repeat(9 * 1024 * 1024));
     mount_json_value(&server, "/v1/responses", &response, "req_response_huge").await;
 
-    provider(&server)
+    let error = provider(&server)
         .create_response(&prepared(false))
         .await
         .expect_err("non-stream response must have a hard byte limit");
+    assert_eq!(error.attempt().state(), AttemptState::OutcomeUnknown);
+    assert_eq!(
+        error
+            .attempt()
+            .resource_limit()
+            .expect("typed limit")
+            .kind(),
+        OpenAIResponsesResourceLimitKind::JsonResponseBytes
+    );
 }
 
 #[tokio::test]
@@ -1515,10 +1568,19 @@ async fn oversized_sse_event_is_rejected() {
     );
     mount_sse(&server, Box::leak(body.into_boxed_str()), "req_sse_huge").await;
 
-    provider(&server)
+    let error = provider(&server)
         .create_response(&prepared(true))
         .await
         .expect_err("an individual SSE event must have a hard byte limit");
+    assert_eq!(error.attempt().state(), AttemptState::OutcomeUnknown);
+    assert_eq!(
+        error
+            .attempt()
+            .resource_limit()
+            .expect("typed limit")
+            .kind(),
+        OpenAIResponsesResourceLimitKind::SseEventBytes
+    );
 }
 
 #[tokio::test]
@@ -1548,4 +1610,429 @@ async fn prepared_transport_identity_must_match_actual_provider_timeouts() {
             .is_empty(),
         "transport mismatch must fail before HTTP"
     );
+}
+
+#[test]
+fn i_json_safe_integer_boundaries_are_recursive_and_stable() {
+    for value in [
+        json!({"nested": [9_007_199_254_740_991_u64]}),
+        json!({"nested": [-9_007_199_254_740_991_i64]}),
+        json!({"rfc_float": 1e30}),
+        json!({"rfc_fraction": 333_333_333.333_333_3_f64}),
+    ] {
+        OpenAIResponsesTokenProjection::builder("gpt-test", "test", value)
+            .build()
+            .expect("valid I-JSON number");
+    }
+
+    for value in [
+        json!({"nested": [9_007_199_254_740_992_u64]}),
+        json!({"nested": [-9_007_199_254_740_992_i64]}),
+    ] {
+        let error = OpenAIResponsesTokenProjection::builder("gpt-test", "test", value)
+            .build()
+            .expect_err("unsafe integer must fail");
+        assert!(error.to_string().contains("JSON string"));
+        assert!(error.to_string().contains("input.nested[0]"));
+    }
+
+    let schema_error = OpenAIResponsesTokenProjection::builder("gpt-test", "test", json!([]))
+        .text(OpenAIResponsesText::json_schema(
+            "unsafe_schema",
+            json!({"const": 9_007_199_254_740_992_u64}),
+            true,
+            OpenAIResponsesTextVerbosity::Low,
+        ))
+        .build()
+        .expect_err("schema integer must fail");
+    assert!(
+        schema_error
+            .to_string()
+            .contains("text.format.schema.const")
+    );
+
+    let tool_error = OpenAIResponsesTokenProjection::builder("gpt-test", "test", json!([]))
+        .tools(vec![json!({
+            "type": "function",
+            "parameters": {"const": -9_007_199_254_740_992_i64}
+        })])
+        .build()
+        .expect_err("tool integer must fail");
+    assert!(tool_error.to_string().contains("tools[0].parameters.const"));
+}
+
+#[tokio::test]
+async fn provider_bound_profile_drives_count_create_and_receipt_identity() {
+    let server = MockServer::start().await;
+    mount_json(
+        &server,
+        "/v1/responses/input_tokens",
+        include_str!("fixtures/openai/responses_input_tokens.json"),
+        "req_profile_count",
+    )
+    .await;
+    mount_json(
+        &server,
+        "/v1/responses",
+        include_str!("fixtures/openai/responses_completed.json"),
+        "req_profile_create",
+    )
+    .await;
+    let limits = OpenAIResponsesResourceLimits::builder()
+        .max_json_response_bytes(4 * 1024 * 1024)
+        .max_sse_total_bytes(8 * 1024 * 1024)
+        .max_sse_event_bytes(512 * 1024)
+        .max_http_error_body_bytes(128 * 1024)
+        .max_observed_tool_events(64)
+        .max_observed_refusals(32)
+        .build()
+        .expect("custom limits");
+    let provider = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .connect_timeout(Duration::from_millis(901))
+        .read_timeout(Duration::from_millis(902))
+        .request_timeout(Duration::from_millis(903))
+        .responses_resource_limits(limits)
+        .build();
+    let call = provider
+        .prepare_response(projection(), prepared(false).controls().clone())
+        .expect("provider-bound prepared call");
+
+    let count = provider
+        .count_response_input_tokens(&call)
+        .await
+        .expect("bounded count");
+    let response = provider
+        .create_response(&call)
+        .await
+        .expect("bounded create");
+
+    assert_eq!(
+        call.transport_profile_digest(),
+        provider
+            .responses_transport_profile()
+            .digest()
+            .expect("profile digest")
+    );
+    assert_eq!(
+        count.transport_profile_digest(),
+        call.transport_profile_digest()
+    );
+    assert_eq!(
+        response.receipt().transport_profile_digest(),
+        call.transport_profile_digest()
+    );
+}
+
+#[test]
+fn every_transport_execution_and_resource_control_changes_profile_identity() {
+    fn digest(builder: llm_adapter::openai::OpenAIProviderBuilder) -> String {
+        builder
+            .build()
+            .responses_transport_profile()
+            .digest()
+            .expect("profile digest")
+    }
+
+    let mut digests = std::collections::HashSet::new();
+    digests.insert(digest(OpenAIProvider::builder("test-key")));
+    digests.insert(digest(
+        OpenAIProvider::builder("test-key").connect_timeout(Duration::from_secs(31)),
+    ));
+    digests.insert(digest(
+        OpenAIProvider::builder("test-key").read_timeout(Duration::from_secs(61)),
+    ));
+    digests.insert(digest(
+        OpenAIProvider::builder("test-key").request_timeout(Duration::from_secs(601)),
+    ));
+
+    let limit_variants = [
+        OpenAIResponsesResourceLimits::builder().max_json_response_bytes(8 * 1024 * 1024 - 1),
+        OpenAIResponsesResourceLimits::builder().max_sse_total_bytes(16 * 1024 * 1024 - 1),
+        OpenAIResponsesResourceLimits::builder().max_sse_event_bytes(1024 * 1024 - 1),
+        OpenAIResponsesResourceLimits::builder().max_http_error_body_bytes(256 * 1024 - 1),
+        OpenAIResponsesResourceLimits::builder().max_observed_tool_events(255),
+        OpenAIResponsesResourceLimits::builder().max_observed_refusals(255),
+    ];
+    for limits in limit_variants {
+        digests.insert(digest(
+            OpenAIProvider::builder("test-key")
+                .responses_resource_limits(limits.build().expect("limit variant")),
+        ));
+    }
+
+    assert_eq!(
+        digests.len(),
+        10,
+        "every profile field must affect identity"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_sync_usage_provenance_remains_reported_missing_or_invalid() {
+    for (label, usage, expected) in [
+        (
+            "reported_zero",
+            json!({
+                "input_tokens": 0,
+                "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                "output_tokens": 0,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": 0
+            }),
+            UsageProvenance::ReportedValid,
+        ),
+        ("missing", Value::Null, UsageProvenance::Missing),
+        (
+            "invalid",
+            json!({
+                "input_tokens": 1,
+                "input_tokens_details": {"cached_tokens": 2, "cache_write_tokens": 0},
+                "output_tokens": 0,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": 1
+            }),
+            UsageProvenance::ReportedInvalid,
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let mut response = completed_response_value();
+        response["status"] = json!("cancelled");
+        response["usage"] = usage;
+        mount_json_value(&server, "/v1/responses", &response, label).await;
+
+        let result = provider(&server)
+            .create_response(&prepared(false))
+            .await
+            .expect("cancelled terminal remains known");
+        assert_eq!(
+            result.receipt().terminal_status(),
+            ResponsesTerminalStatus::Cancelled
+        );
+        assert_eq!(result.receipt().usage().provenance, expected);
+    }
+}
+
+#[tokio::test]
+async fn cancelled_stream_binds_sse_envelope_and_terminal_accounting() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["status"] = json!("cancelled");
+    let body = format!(
+        "event: response.cancelled\ndata: {}\n\n",
+        json!({
+            "type": "response.cancelled",
+            "sequence_number": 23,
+            "response": response,
+        })
+    );
+    mount_sse(
+        &server,
+        Box::leak(body.into_boxed_str()),
+        "req_stream_cancelled",
+    )
+    .await;
+
+    let result = provider(&server)
+        .create_response(&prepared(true))
+        .await
+        .expect("cancelled SSE terminal");
+
+    assert_eq!(
+        result.receipt().terminal_status(),
+        ResponsesTerminalStatus::Cancelled
+    );
+    assert_eq!(result.receipt().terminal_sequence_number(), Some(23));
+    assert_eq!(
+        result.receipt().terminal_event_name(),
+        Some("response.cancelled")
+    );
+    assert_eq!(
+        result.receipt().terminal_json_type(),
+        Some("response.cancelled")
+    );
+    assert_eq!(
+        result.receipt().usage().provenance,
+        UsageProvenance::ReportedValid
+    );
+}
+
+#[tokio::test]
+async fn malformed_stream_refusal_still_leaves_a_typed_witness() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "event: response.refusal.delta\n",
+        "data: {\"type\":\"response.refusal.delta\",\"sequence_number\":1,",
+        "\"item_id\":42,\"output_index\":0,\"content_index\":0,\"delta\":false}\n\n",
+    );
+    mount_sse(&server, body, "req_malformed_refusal").await;
+
+    let error = provider(&server)
+        .create_response(&prepared(true))
+        .await
+        .expect_err("malformed refusal must fail");
+
+    assert_eq!(error.attempt().observed_refusals().len(), 1);
+    assert!(error.attempt().observed_refusals()[0].malformed());
+    assert_eq!(
+        error.attempt().observed_refusals()[0].event_type(),
+        "response.refusal.delta"
+    );
+}
+
+#[tokio::test]
+async fn oversized_http_error_bodies_are_typed_for_count_and_create() {
+    for endpoint in ["/v1/responses/input_tokens", "/v1/responses"] {
+        let server = MockServer::start().await;
+        let body = json!({
+            "error": {
+                "code": "large_error",
+                "message": "x".repeat(300 * 1024),
+                "type": "invalid_request_error"
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(400).set_body_json(&body))
+            .mount(&server)
+            .await;
+
+        let error = if endpoint.ends_with("input_tokens") {
+            provider(&server)
+                .count_response_input_tokens(&prepared(false))
+                .await
+                .expect_err("large count error body")
+        } else {
+            provider(&server)
+                .create_response(&prepared(false))
+                .await
+                .expect_err("large create error body")
+        };
+        assert_eq!(error.attempt().state(), AttemptState::HttpRejected);
+        assert_eq!(
+            error
+                .attempt()
+                .resource_limit()
+                .expect("typed limit")
+                .kind(),
+            OpenAIResponsesResourceLimitKind::HttpErrorBodyBytes
+        );
+    }
+}
+
+#[tokio::test]
+async fn sse_total_bytes_are_bounded_independently_from_event_bytes() {
+    let server = MockServer::start().await;
+    let limits = OpenAIResponsesResourceLimits::builder()
+        .max_sse_total_bytes(900)
+        .max_sse_event_bytes(300)
+        .build()
+        .expect("small stream limits");
+    let provider = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .responses_resource_limits(limits)
+        .build();
+    let call = provider
+        .prepare_response(projection(), prepared(true).controls().clone())
+        .expect("provider-bound stream");
+    let mut body = String::new();
+    for sequence in 1..=10 {
+        body.push_str("event: response.output_text.delta\n");
+        body.push_str("data: ");
+        body.push_str(
+            &json!({
+                "type": "response.output_text.delta",
+                "sequence_number": sequence,
+                "item_id": "msg_total_limit",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "xxxxxxxx"
+            })
+            .to_string(),
+        );
+        body.push_str("\n\n");
+    }
+    mount_sse(
+        &server,
+        Box::leak(body.into_boxed_str()),
+        "req_sse_total_limit",
+    )
+    .await;
+
+    let error = provider
+        .create_response(&call)
+        .await
+        .expect_err("total SSE bytes must be bounded");
+    assert_eq!(error.attempt().state(), AttemptState::OutcomeUnknown);
+    assert_eq!(
+        error
+            .attempt()
+            .resource_limit()
+            .expect("typed limit")
+            .kind(),
+        OpenAIResponsesResourceLimitKind::SseTotalBytes
+    );
+}
+
+#[tokio::test]
+async fn tool_and_refusal_observation_vectors_have_independent_hard_limits() {
+    for refusal in [false, true] {
+        let server = MockServer::start().await;
+        let limits = if refusal {
+            OpenAIResponsesResourceLimits::builder().max_observed_refusals(1)
+        } else {
+            OpenAIResponsesResourceLimits::builder().max_observed_tool_events(1)
+        }
+        .build()
+        .expect("observation limit");
+        let provider = OpenAIProvider::builder("test-key")
+            .base_url(server.uri())
+            .responses_resource_limits(limits)
+            .build();
+        let call = provider
+            .prepare_response(projection(), prepared(true).controls().clone())
+            .expect("provider-bound stream");
+        let body = if refusal {
+            concat!(
+                "event: response.refusal.delta\n",
+                "data: {\"type\":\"response.refusal.delta\",\"sequence_number\":1,\"item_id\":\"msg_1\",\"delta\":\"a\"}\n\n",
+                "event: response.refusal.delta\n",
+                "data: {\"type\":\"response.refusal.delta\",\"sequence_number\":2,\"item_id\":\"msg_2\",\"delta\":\"b\"}\n\n",
+            )
+        } else {
+            concat!(
+                "event: response.output_item.added\n",
+                "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"name\":\"one\"}}\n\n",
+                "event: response.output_item.added\n",
+                "data: {\"type\":\"response.output_item.added\",\"sequence_number\":2,\"item\":{\"id\":\"fc_2\",\"type\":\"function_call\",\"name\":\"two\"}}\n\n",
+            )
+        };
+        mount_sse(&server, body, "req_observation_limit").await;
+
+        let error = provider
+            .create_response(&call)
+            .await
+            .expect_err("observation vector must be bounded");
+        let expected = if refusal {
+            OpenAIResponsesResourceLimitKind::ObservedRefusals
+        } else {
+            OpenAIResponsesResourceLimitKind::ObservedToolEvents
+        };
+        assert_eq!(
+            error
+                .attempt()
+                .resource_limit()
+                .expect("typed limit")
+                .kind(),
+            expected
+        );
+        assert_eq!(
+            error
+                .attempt()
+                .resource_limit()
+                .expect("typed limit")
+                .observed(),
+            2
+        );
+    }
 }

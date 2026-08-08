@@ -94,10 +94,13 @@ async fn main() -> anyhow::Result<()> {
 The Responses API is intentionally provider-native rather than part of the
 generic `Provider` trait. The same prepared projection produces both the
 `/v1/responses/input_tokens` body and the `/v1/responses` body; response-only
-controls and the strict transport policy have separate digests. All three
-digests use RFC 8785 JCS (`rfc8785-jcs/v1`) before SHA-256. `truncation` is part
-of the token-relevant projection because it can change which input reaches the
-model; `max_output_tokens`, streaming, storage/background behavior, service
+controls and the strict transport profile have separate digests. All three
+digests use RFC 8785 JCS over recursively validated I-JSON
+(`rfc8785-jcs-ijson/v2`) before SHA-256. Integer-valued arbitrary JSON fields
+in input, JSON Schema, or tools must remain within the exact IEEE-754 range
+`[-(2^53-1), 2^53-1]`; larger identifiers must be JSON strings. `truncation` is
+part of the token-relevant projection because it can change which input reaches
+the model; `max_output_tokens`, streaming, storage/background behavior, service
 tier, and `include` remain response-only controls.
 
 ```rust
@@ -105,7 +108,6 @@ use llm_adapter::openai::{
     OpenAIProvider,
     responses::{
         OpenAIResponsesResponseControls, OpenAIResponsesTokenProjection,
-        PreparedOpenAIResponse,
     },
 };
 use serde_json::json;
@@ -117,9 +119,8 @@ let projection = OpenAIResponsesTokenProjection::builder(
 )
 .build()?;
 let controls = OpenAIResponsesResponseControls::builder(1_200).build()?;
-let prepared = PreparedOpenAIResponse::new(projection, controls)?;
-
 let provider = OpenAIProvider::builder(api_key).build();
+let prepared = provider.prepare_response(projection, controls)?;
 let count = provider.count_response_input_tokens(&prepared).await?;
 let response = provider.create_response(&prepared).await?;
 assert_eq!(count.projection_digest(), response.receipt().projection_digest());
@@ -127,14 +128,22 @@ assert_eq!(count.projection_digest(), response.receipt().projection_digest());
 
 Count and create use a dedicated strict client with redirects disabled and
 `reqwest::retry::never()`, so the adapter performs exactly one HTTP attempt.
-This policy is versioned and digest-bound to both prepared calls and receipts;
-the legacy Chat/Embedding client remains separate. Streaming stops at the first
-terminal event, even if the connection remains open.
+Its immutable, versioned transport profile binds connect/read/request timeout
+configuration plus JSON, SSE total/event, HTTP error-body, tool-observation,
+and refusal-observation limits to prepared calls and receipts. A prepared call
+must match the executing provider's profile before HTTP. The legacy
+Chat/Embedding client remains separate. Streaming stops at the first terminal
+event, even if the connection remains open, and validates the retained SSE
+`event:` name against the JSON event type and response status.
 
 The parser captures the terminal envelope before validating output. A malformed
 output, tool payload, refusal payload, or contradictory status therefore fails
 without discarding already-known response ID, returned model, usage, tool or
-refusal observations. Receipts also preserve provider error details,
+refusal observations. Malformed tool/refusal stream activity leaves a typed
+witness rather than being reported as no activity. Completed, incomplete,
+failed, and cancelled terminal responses preserve their available accounting
+and output evidence under status-specific consistency rules. Receipts also
+preserve provider error details,
 `incomplete_details.reason`, actual returned service tier, and returned
 reasoning fields when supplied. Because every request explicitly sets a service
 tier, a terminal response that omits the actual tier fails with its known

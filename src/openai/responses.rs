@@ -16,17 +16,24 @@ use std::fmt;
 
 /// Wire contract for fields shared by input counting and execution.
 pub const TOKEN_RELEVANT_REQUEST_PROJECTION_VERSION: &str =
-    "openai-responses-token-relevant-request-projection/v2";
+    "openai-responses-token-relevant-request-projection/v3";
 /// Wire contract for controls that do not affect input tokenization.
 pub const RESPONSE_ONLY_CONTROLS_VERSION: &str = "openai-responses-controls/v2";
 /// Sealed prepared-call contract joining projection, controls, and transport.
-pub const PREPARED_RESPONSE_VERSION: &str = "openai-prepared-response/v2";
+pub const PREPARED_RESPONSE_VERSION: &str = "openai-prepared-response/v3";
 /// Receipt contract for count, execution, and failed-attempt evidence.
-pub const PROVIDER_RECEIPT_VERSION: &str = "openai-responses-provider-receipt/v2";
-/// Strict one-attempt transport policy contract.
-pub const TRANSPORT_POLICY_VERSION: &str = "openai-responses-transport-policy/v1";
+pub const PROVIDER_RECEIPT_VERSION: &str = "openai-responses-provider-receipt/v3";
+/// Strict one-attempt transport and resource profile contract.
+pub const TRANSPORT_PROFILE_VERSION: &str = "openai-responses-transport-profile/v2";
 /// Canonical JSON algorithm used before SHA-256 for Responses digests.
-pub const DIGEST_SERIALIZATION_PROFILE: &str = "rfc8785-jcs/v1";
+pub const DIGEST_SERIALIZATION_PROFILE: &str = "rfc8785-jcs-ijson/v2";
+
+const MAX_IJSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const MAX_CONFIGURED_JSON_RESPONSE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CONFIGURED_SSE_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_CONFIGURED_SSE_EVENT_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_CONFIGURED_HTTP_ERROR_BODY_BYTES: u64 = 1024 * 1024;
+const MAX_CONFIGURED_OBSERVATIONS: u32 = 4_096;
 
 #[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
 #[error("{message}")]
@@ -194,6 +201,7 @@ impl OpenAIResponsesText {
                     "Responses JSON schema must be an object",
                 ));
             }
+            validate_i_json_value(schema, "text.format.schema")?;
             if description.as_ref().is_some_and(|value| value.is_empty()) {
                 return Err(OpenAIResponsesBuildError::new(
                     "Responses JSON schema description cannot be empty",
@@ -327,11 +335,15 @@ impl OpenAIResponsesTokenProjection {
                 "Responses input must be a string, array, or object",
             ));
         }
+        validate_i_json_value(&self.input, "input")?;
         self.text.validate()?;
         if self.tools.iter().any(|tool| !tool.is_object()) {
             return Err(OpenAIResponsesBuildError::new(
                 "every Responses tool definition must be an object",
             ));
+        }
+        for (index, tool) in self.tools.iter().enumerate() {
+            validate_i_json_value(tool, &format!("tools[{index}]"))?;
         }
         if self.tools.is_empty() && self.tool_choice != OpenAIResponsesToolChoice::None {
             return Err(OpenAIResponsesBuildError::new(
@@ -636,23 +648,220 @@ pub enum OpenAIResponsesRetryPolicy {
     Never,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenAIResponsesTimeout {
+    seconds: u64,
+    nanoseconds: u32,
+}
+
+impl OpenAIResponsesTimeout {
+    fn from_duration(value: std::time::Duration) -> Self {
+        Self {
+            seconds: value.as_secs(),
+            nanoseconds: value.subsec_nanos(),
+        }
+    }
+
+    fn duration_unchecked(self) -> std::time::Duration {
+        std::time::Duration::new(self.seconds, self.nanoseconds)
+    }
+
+    fn validate(self, name: &str) -> Result<(), OpenAIResponsesBuildError> {
+        if self.nanoseconds >= 1_000_000_000 {
+            return Err(OpenAIResponsesBuildError::new(format!(
+                "Responses {name} nanoseconds must be less than one second"
+            )));
+        }
+        if self.seconds == 0 && self.nanoseconds == 0 {
+            return Err(OpenAIResponsesBuildError::new(format!(
+                "Responses {name} must be positive"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn as_duration(self) -> Result<std::time::Duration, OpenAIResponsesBuildError> {
+        self.validate("timeout")?;
+        Ok(self.duration_unchecked())
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct OpenAIResponsesTransportPolicy {
+pub struct OpenAIResponsesResourceLimits {
+    max_json_response_bytes: u64,
+    max_sse_total_bytes: u64,
+    max_sse_event_bytes: u64,
+    max_http_error_body_bytes: u64,
+    max_observed_tool_events: u32,
+    max_observed_refusals: u32,
+}
+
+impl OpenAIResponsesResourceLimits {
+    pub fn bounded() -> Self {
+        Self {
+            max_json_response_bytes: 8 * 1024 * 1024,
+            max_sse_total_bytes: 16 * 1024 * 1024,
+            max_sse_event_bytes: 1024 * 1024,
+            max_http_error_body_bytes: 256 * 1024,
+            max_observed_tool_events: 256,
+            max_observed_refusals: 256,
+        }
+    }
+
+    pub fn builder() -> OpenAIResponsesResourceLimitsBuilder {
+        OpenAIResponsesResourceLimitsBuilder {
+            limits: Self::bounded(),
+        }
+    }
+
+    pub fn max_json_response_bytes(&self) -> u64 {
+        self.max_json_response_bytes
+    }
+
+    pub fn max_sse_total_bytes(&self) -> u64 {
+        self.max_sse_total_bytes
+    }
+
+    pub fn max_sse_event_bytes(&self) -> u64 {
+        self.max_sse_event_bytes
+    }
+
+    pub fn max_http_error_body_bytes(&self) -> u64 {
+        self.max_http_error_body_bytes
+    }
+
+    pub fn max_observed_tool_events(&self) -> u32 {
+        self.max_observed_tool_events
+    }
+
+    pub fn max_observed_refusals(&self) -> u32 {
+        self.max_observed_refusals
+    }
+
+    fn validate(&self) -> Result<(), OpenAIResponsesBuildError> {
+        if self.max_json_response_bytes == 0
+            || self.max_sse_total_bytes == 0
+            || self.max_sse_event_bytes == 0
+            || self.max_http_error_body_bytes == 0
+            || self.max_observed_tool_events == 0
+            || self.max_observed_refusals == 0
+        {
+            return Err(OpenAIResponsesBuildError::new(
+                "all Responses transport resource limits must be positive",
+            ));
+        }
+        if self.max_sse_event_bytes > self.max_sse_total_bytes {
+            return Err(OpenAIResponsesBuildError::new(
+                "Responses SSE event limit cannot exceed the total stream limit",
+            ));
+        }
+        if self.max_json_response_bytes > MAX_CONFIGURED_JSON_RESPONSE_BYTES
+            || self.max_sse_total_bytes > MAX_CONFIGURED_SSE_TOTAL_BYTES
+            || self.max_sse_event_bytes > MAX_CONFIGURED_SSE_EVENT_BYTES
+            || self.max_http_error_body_bytes > MAX_CONFIGURED_HTTP_ERROR_BODY_BYTES
+            || self.max_observed_tool_events > MAX_CONFIGURED_OBSERVATIONS
+            || self.max_observed_refusals > MAX_CONFIGURED_OBSERVATIONS
+        {
+            return Err(OpenAIResponsesBuildError::new(
+                "Responses transport resource limits exceed the supported hard ceilings",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for OpenAIResponsesResourceLimits {
+    fn default() -> Self {
+        Self::bounded()
+    }
+}
+
+pub struct OpenAIResponsesResourceLimitsBuilder {
+    limits: OpenAIResponsesResourceLimits,
+}
+
+impl OpenAIResponsesResourceLimitsBuilder {
+    pub fn max_json_response_bytes(mut self, value: u64) -> Self {
+        self.limits.max_json_response_bytes = value;
+        self
+    }
+
+    pub fn max_sse_total_bytes(mut self, value: u64) -> Self {
+        self.limits.max_sse_total_bytes = value;
+        self
+    }
+
+    pub fn max_sse_event_bytes(mut self, value: u64) -> Self {
+        self.limits.max_sse_event_bytes = value;
+        self
+    }
+
+    pub fn max_http_error_body_bytes(mut self, value: u64) -> Self {
+        self.limits.max_http_error_body_bytes = value;
+        self
+    }
+
+    pub fn max_observed_tool_events(mut self, value: u32) -> Self {
+        self.limits.max_observed_tool_events = value;
+        self
+    }
+
+    pub fn max_observed_refusals(mut self, value: u32) -> Self {
+        self.limits.max_observed_refusals = value;
+        self
+    }
+
+    pub fn build(self) -> Result<OpenAIResponsesResourceLimits, OpenAIResponsesBuildError> {
+        self.limits.validate()?;
+        Ok(self.limits)
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenAIResponsesTransportProfile {
     schema_version: String,
     redirect_policy: OpenAIResponsesRedirectPolicy,
     retry_policy: OpenAIResponsesRetryPolicy,
     max_http_attempts: u8,
+    connect_timeout: OpenAIResponsesTimeout,
+    read_timeout: OpenAIResponsesTimeout,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_timeout: Option<OpenAIResponsesTimeout>,
+    resource_limits: OpenAIResponsesResourceLimits,
 }
 
-impl OpenAIResponsesTransportPolicy {
-    pub fn strict() -> Self {
-        Self {
-            schema_version: TRANSPORT_POLICY_VERSION.into(),
+impl OpenAIResponsesTransportProfile {
+    pub fn default_strict() -> Self {
+        Self::strict(
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(60),
+            None,
+            OpenAIResponsesResourceLimits::bounded(),
+        )
+        .expect("canonical Responses transport profile is valid")
+    }
+
+    pub(crate) fn strict(
+        connect_timeout: std::time::Duration,
+        read_timeout: std::time::Duration,
+        request_timeout: Option<std::time::Duration>,
+        resource_limits: OpenAIResponsesResourceLimits,
+    ) -> Result<Self, OpenAIResponsesBuildError> {
+        let profile = Self {
+            schema_version: TRANSPORT_PROFILE_VERSION.into(),
             redirect_policy: OpenAIResponsesRedirectPolicy::Reject,
             retry_policy: OpenAIResponsesRetryPolicy::Never,
             max_http_attempts: 1,
-        }
+            connect_timeout: OpenAIResponsesTimeout::from_duration(connect_timeout),
+            read_timeout: OpenAIResponsesTimeout::from_duration(read_timeout),
+            request_timeout: request_timeout.map(OpenAIResponsesTimeout::from_duration),
+            resource_limits,
+        };
+        profile.validate()?;
+        Ok(profile)
     }
 
     pub fn redirect_policy(&self) -> OpenAIResponsesRedirectPolicy {
@@ -667,23 +876,52 @@ impl OpenAIResponsesTransportPolicy {
         self.max_http_attempts
     }
 
+    pub fn connect_timeout(&self) -> OpenAIResponsesTimeout {
+        self.connect_timeout
+    }
+
+    pub fn read_timeout(&self) -> OpenAIResponsesTimeout {
+        self.read_timeout
+    }
+
+    pub fn request_timeout(&self) -> Option<OpenAIResponsesTimeout> {
+        self.request_timeout
+    }
+
+    pub fn resource_limits(&self) -> &OpenAIResponsesResourceLimits {
+        &self.resource_limits
+    }
+
     pub fn digest(&self) -> Result<String, OpenAIResponsesBuildError> {
         self.validate()?;
         digest_json(&json!({
             "digest_serialization_profile": DIGEST_SERIALIZATION_PROFILE,
-            "transport_policy": self,
+            "transport_profile": self,
         }))
     }
 
     fn validate(&self) -> Result<(), OpenAIResponsesBuildError> {
-        if self != &Self::strict() {
+        if self.schema_version != TRANSPORT_PROFILE_VERSION
+            || self.redirect_policy != OpenAIResponsesRedirectPolicy::Reject
+            || self.retry_policy != OpenAIResponsesRetryPolicy::Never
+            || self.max_http_attempts != 1
+        {
             return Err(OpenAIResponsesBuildError::new(
-                "Responses transport policy is not the canonical strict policy",
+                "Responses transport profile does not enforce one strict HTTP attempt",
             ));
         }
+        self.connect_timeout.validate("connect timeout")?;
+        self.read_timeout.validate("read timeout")?;
+        if let Some(timeout) = self.request_timeout {
+            timeout.validate("request timeout")?;
+        }
+        self.resource_limits.validate()?;
         Ok(())
     }
 }
+
+/// Compatibility name for the now resource-complete transport profile.
+pub type OpenAIResponsesTransportPolicy = OpenAIResponsesTransportProfile;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -693,8 +931,8 @@ pub struct PreparedOpenAIResponse {
     projection_digest: String,
     controls: OpenAIResponsesResponseControls,
     controls_digest: String,
-    transport_policy: OpenAIResponsesTransportPolicy,
-    transport_policy_digest: String,
+    transport_profile: OpenAIResponsesTransportProfile,
+    transport_profile_digest: String,
 }
 
 impl PreparedOpenAIResponse {
@@ -702,18 +940,29 @@ impl PreparedOpenAIResponse {
         projection: OpenAIResponsesTokenProjection,
         controls: OpenAIResponsesResponseControls,
     ) -> Result<Self, OpenAIResponsesBuildError> {
+        Self::new_with_transport_profile(
+            projection,
+            controls,
+            OpenAIResponsesTransportProfile::default_strict(),
+        )
+    }
+
+    pub(crate) fn new_with_transport_profile(
+        projection: OpenAIResponsesTokenProjection,
+        controls: OpenAIResponsesResponseControls,
+        transport_profile: OpenAIResponsesTransportProfile,
+    ) -> Result<Self, OpenAIResponsesBuildError> {
         let projection_digest = projection.digest()?;
         let controls_digest = controls.digest()?;
-        let transport_policy = OpenAIResponsesTransportPolicy::strict();
-        let transport_policy_digest = transport_policy.digest()?;
+        let transport_profile_digest = transport_profile.digest()?;
         Ok(Self {
             schema_version: PREPARED_RESPONSE_VERSION.into(),
             projection,
             projection_digest,
             controls,
             controls_digest,
-            transport_policy,
-            transport_policy_digest,
+            transport_profile,
+            transport_profile_digest,
         })
     }
 
@@ -733,12 +982,20 @@ impl PreparedOpenAIResponse {
         &self.controls_digest
     }
 
-    pub fn transport_policy(&self) -> &OpenAIResponsesTransportPolicy {
-        &self.transport_policy
+    pub fn transport_profile(&self) -> &OpenAIResponsesTransportProfile {
+        &self.transport_profile
+    }
+
+    pub fn transport_profile_digest(&self) -> &str {
+        &self.transport_profile_digest
+    }
+
+    pub fn transport_policy(&self) -> &OpenAIResponsesTransportProfile {
+        self.transport_profile()
     }
 
     pub fn transport_policy_digest(&self) -> &str {
-        &self.transport_policy_digest
+        self.transport_profile_digest()
     }
 
     pub fn input_token_count_body(&self) -> Result<Value, OpenAIResponsesBuildError> {
@@ -797,9 +1054,9 @@ impl PreparedOpenAIResponse {
                 "prepared Responses control digest mismatch",
             ));
         }
-        if self.transport_policy_digest != self.transport_policy.digest()? {
+        if self.transport_profile_digest != self.transport_profile.digest()? {
             return Err(OpenAIResponsesBuildError::new(
-                "prepared Responses transport policy digest mismatch",
+                "prepared Responses transport profile digest mismatch",
             ));
         }
         Ok(())
@@ -818,11 +1075,51 @@ fn digest_json<T: Serialize>(value: &T) -> Result<String, OpenAIResponsesBuildEr
 }
 
 fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, OpenAIResponsesBuildError> {
-    serde_jcs::to_vec(value).map_err(|error| {
+    let value = serde_json::to_value(value).map_err(|error| {
+        OpenAIResponsesBuildError::new(format!(
+            "serialize Responses digest input before RFC 8785 JCS: {error}"
+        ))
+    })?;
+    validate_i_json_value(&value, "digest")?;
+    serde_jcs::to_vec(&value).map_err(|error| {
         OpenAIResponsesBuildError::new(format!(
             "canonicalize Responses digest input with RFC 8785 JCS: {error}"
         ))
     })
+}
+
+fn validate_i_json_value(value: &Value, path: &str) -> Result<(), OpenAIResponsesBuildError> {
+    match value {
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                validate_i_json_value(value, &format!("{path}[{index}]"))?;
+            }
+        }
+        Value::Object(object) => {
+            for (key, value) in object {
+                validate_i_json_value(value, &format!("{path}.{}", escape_json_path_key(key)))?;
+            }
+        }
+        Value::Number(number) => {
+            let outside_safe_integer_domain = number
+                .as_i64()
+                .is_some_and(|value| value.unsigned_abs() > MAX_IJSON_SAFE_INTEGER)
+                || number
+                    .as_u64()
+                    .is_some_and(|value| value > MAX_IJSON_SAFE_INTEGER);
+            if outside_safe_integer_domain {
+                return Err(OpenAIResponsesBuildError::new(format!(
+                    "Responses JSON integer at {path} exceeds the exact I-JSON/IEEE-754 safe integer domain; encode it as a JSON string"
+                )));
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::String(_) => {}
+    }
+    Ok(())
+}
+
+fn escape_json_path_key(key: &str) -> String {
+    key.replace('\\', "\\\\").replace('.', "\\.")
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -855,6 +1152,37 @@ pub enum AttemptState {
     HttpRejected,
     ProviderErrorObserved,
     TerminalObserved,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum OpenAIResponsesResourceLimitKind {
+    JsonResponseBytes,
+    SseTotalBytes,
+    SseEventBytes,
+    HttpErrorBodyBytes,
+    ObservedToolEvents,
+    ObservedRefusals,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OpenAIResponsesResourceLimitEvidence {
+    kind: OpenAIResponsesResourceLimitKind,
+    limit: u64,
+    observed: u64,
+}
+
+impl OpenAIResponsesResourceLimitEvidence {
+    pub fn kind(&self) -> OpenAIResponsesResourceLimitKind {
+        self.kind
+    }
+
+    pub fn limit(&self) -> u64 {
+        self.limit
+    }
+
+    pub fn observed(&self) -> u64 {
+        self.observed
+    }
 }
 
 impl AttemptState {
@@ -924,6 +1252,7 @@ pub struct OpenAIResponsesObservedRefusal {
     item_id: Option<String>,
     text: String,
     sequence_number: Option<u64>,
+    malformed: bool,
 }
 
 impl OpenAIResponsesObservedRefusal {
@@ -941,6 +1270,10 @@ impl OpenAIResponsesObservedRefusal {
 
     pub fn sequence_number(&self) -> Option<u64> {
         self.sequence_number
+    }
+
+    pub fn malformed(&self) -> bool {
+        self.malformed
     }
 }
 
@@ -963,6 +1296,10 @@ pub struct OpenAIResponsesAttemptReceipt {
     provider_error: Option<OpenAIResponsesProviderErrorEvidence>,
     incomplete_reason: Option<String>,
     returned_reasoning: Option<OpenAIResponsesReturnedReasoning>,
+    stream_event_name: Option<String>,
+    stream_json_type: Option<String>,
+    stream_sequence_number: Option<u64>,
+    resource_limit: Option<OpenAIResponsesResourceLimitEvidence>,
     observed_tool_events: Vec<OpenAIResponsesObservedToolEvent>,
     observed_refusals: Vec<OpenAIResponsesObservedRefusal>,
 }
@@ -994,6 +1331,10 @@ impl OpenAIResponsesAttemptReceipt {
 
     pub fn transport_policy_digest(&self) -> &str {
         &self.transport_policy_digest
+    }
+
+    pub fn transport_profile_digest(&self) -> &str {
+        self.transport_policy_digest()
     }
 
     pub fn status_code(&self) -> Option<u16> {
@@ -1034,6 +1375,22 @@ impl OpenAIResponsesAttemptReceipt {
 
     pub fn returned_reasoning(&self) -> Option<&OpenAIResponsesReturnedReasoning> {
         self.returned_reasoning.as_ref()
+    }
+
+    pub fn stream_event_name(&self) -> Option<&str> {
+        self.stream_event_name.as_deref()
+    }
+
+    pub fn stream_json_type(&self) -> Option<&str> {
+        self.stream_json_type.as_deref()
+    }
+
+    pub fn stream_sequence_number(&self) -> Option<u64> {
+        self.stream_sequence_number
+    }
+
+    pub fn resource_limit(&self) -> Option<&OpenAIResponsesResourceLimitEvidence> {
+        self.resource_limit.as_ref()
     }
 
     pub fn observed_tool_events(&self) -> &[OpenAIResponsesObservedToolEvent] {
@@ -1091,6 +1448,7 @@ pub enum ResponsesTerminalStatus {
     Completed,
     Incomplete,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1099,6 +1457,7 @@ pub struct OpenAIResponsesObservedToolEvent {
     item_id: Option<String>,
     call_id: Option<String>,
     name: Option<String>,
+    malformed: bool,
 }
 
 impl OpenAIResponsesObservedToolEvent {
@@ -1116,6 +1475,10 @@ impl OpenAIResponsesObservedToolEvent {
 
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
+    }
+
+    pub fn malformed(&self) -> bool {
+        self.malformed
     }
 }
 
@@ -1139,6 +1502,8 @@ pub struct OpenAIResponseReceipt {
     provider_error: Option<OpenAIResponsesProviderErrorEvidence>,
     incomplete_reason: Option<String>,
     returned_reasoning: Option<OpenAIResponsesReturnedReasoning>,
+    terminal_event_name: Option<String>,
+    terminal_json_type: Option<String>,
     observed_tool_events: Vec<OpenAIResponsesObservedToolEvent>,
     observed_refusals: Vec<OpenAIResponsesObservedRefusal>,
 }
@@ -1174,6 +1539,10 @@ impl OpenAIResponseReceipt {
 
     pub fn transport_policy_digest(&self) -> &str {
         &self.transport_policy_digest
+    }
+
+    pub fn transport_profile_digest(&self) -> &str {
+        self.transport_policy_digest()
     }
 
     pub fn requested_model(&self) -> &str {
@@ -1214,6 +1583,14 @@ impl OpenAIResponseReceipt {
 
     pub fn returned_reasoning(&self) -> Option<&OpenAIResponsesReturnedReasoning> {
         self.returned_reasoning.as_ref()
+    }
+
+    pub fn terminal_event_name(&self) -> Option<&str> {
+        self.terminal_event_name.as_deref()
+    }
+
+    pub fn terminal_json_type(&self) -> Option<&str> {
+        self.terminal_json_type.as_deref()
     }
 
     pub fn observed_tool_events(&self) -> &[OpenAIResponsesObservedToolEvent] {
@@ -1287,6 +1664,10 @@ impl OpenAIResponseInputTokenCount {
         &self.transport_policy_digest
     }
 
+    pub fn transport_profile_digest(&self) -> &str {
+        self.transport_policy_digest()
+    }
+
     pub fn input_tokens(&self) -> u64 {
         self.input_tokens
     }
@@ -1303,12 +1684,45 @@ struct ParsedTerminal {
     provider_error: Option<OpenAIResponsesProviderErrorEvidence>,
     incomplete_reason: Option<String>,
     returned_reasoning: Option<OpenAIResponsesReturnedReasoning>,
+    terminal_event_name: Option<String>,
+    terminal_json_type: Option<String>,
     output_text: String,
     observed_tool_events: Vec<OpenAIResponsesObservedToolEvent>,
     observed_refusals: Vec<OpenAIResponsesObservedRefusal>,
 }
 
 impl OpenAIProvider {
+    /// Seal a Responses projection and execution controls to this provider's
+    /// immutable transport profile.
+    pub fn prepare_response(
+        &self,
+        projection: OpenAIResponsesTokenProjection,
+        controls: OpenAIResponsesResponseControls,
+    ) -> Result<PreparedOpenAIResponse, OpenAIResponsesBuildError> {
+        PreparedOpenAIResponse::new_with_transport_profile(
+            projection,
+            controls,
+            self.responses_transport_profile.clone(),
+        )
+    }
+
+    pub fn responses_transport_profile(&self) -> &OpenAIResponsesTransportProfile {
+        &self.responses_transport_profile
+    }
+
+    fn validate_prepared_response(
+        &self,
+        prepared: &PreparedOpenAIResponse,
+    ) -> Result<(), OpenAIResponsesBuildError> {
+        prepared.validate()?;
+        if prepared.transport_profile != self.responses_transport_profile {
+            return Err(OpenAIResponsesBuildError::new(
+                "prepared Responses transport profile does not match the executing provider",
+            ));
+        }
+        Ok(())
+    }
+
     /// Count input tokens for a prepared Responses call.
     ///
     /// The count body is derived from the same immutable projection later used
@@ -1320,6 +1734,8 @@ impl OpenAIProvider {
     ) -> Result<OpenAIResponseInputTokenCount, OpenAIResponsesError> {
         let endpoint = self.responses_input_tokens_path.clone();
         let mut attempt = self.attempt_receipt(prepared, endpoint.clone(), false);
+        self.validate_prepared_response(prepared)
+            .map_err(|error| invalid_prepared_failure(error.to_string(), attempt.clone()))?;
         let body = prepared
             .input_token_count_body()
             .map_err(|error| invalid_prepared_failure(error.to_string(), attempt.clone()))?;
@@ -1347,14 +1763,18 @@ impl OpenAIProvider {
         if !status.is_success() {
             attempt.state = AttemptState::HttpRejected;
             let retry_after = extract_retry_after_header(response.headers());
-            let error_text = response.text().await.map_err(|source| {
-                mark_outcome_unknown(&mut attempt);
-                request_failure(
-                    "read input-token error response",
-                    source.into(),
-                    attempt.clone(),
-                )
+            let error_bytes = read_bounded_response_body(
+                response,
+                self.responses_transport_profile
+                    .resource_limits
+                    .max_http_error_body_bytes,
+                OpenAIResponsesResourceLimitKind::HttpErrorBodyBytes,
+            )
+            .await
+            .map_err(|error| {
+                bounded_body_failure("read input-token error response", error, &mut attempt)
             })?;
+            let error_text = String::from_utf8_lossy(&error_bytes).into_owned();
             attempt.provider_error = parse_http_error_evidence(&error_text);
             return Err(request_failure(
                 "input-token endpoint rejected request",
@@ -1363,10 +1783,15 @@ impl OpenAIProvider {
             ));
         }
 
-        let bytes = response.bytes().await.map_err(|source| {
-            mark_outcome_unknown(&mut attempt);
-            request_failure("read input-token response", source.into(), attempt.clone())
-        })?;
+        let bytes = read_bounded_response_body(
+            response,
+            self.responses_transport_profile
+                .resource_limits
+                .max_json_response_bytes,
+            OpenAIResponsesResourceLimitKind::JsonResponseBytes,
+        )
+        .await
+        .map_err(|error| bounded_body_failure("read input-token response", error, &mut attempt))?;
         let value: Value = serde_json::from_slice(&bytes).map_err(|source| {
             mark_outcome_unknown(&mut attempt);
             request_failure(
@@ -1400,7 +1825,7 @@ impl OpenAIProvider {
             status_code: status.as_u16(),
             requested_model: prepared.projection.model.clone(),
             projection_digest: prepared.projection_digest.clone(),
-            transport_policy_digest: prepared.transport_policy_digest.clone(),
+            transport_policy_digest: prepared.transport_profile_digest.clone(),
             input_tokens,
         })
     }
@@ -1416,6 +1841,8 @@ impl OpenAIProvider {
     ) -> Result<OpenAIResponseResult, OpenAIResponsesError> {
         let endpoint = self.responses_path.clone();
         let mut attempt = self.attempt_receipt(prepared, endpoint.clone(), true);
+        self.validate_prepared_response(prepared)
+            .map_err(|error| invalid_prepared_failure(error.to_string(), attempt.clone()))?;
         let body = prepared
             .response_body()
             .map_err(|error| invalid_prepared_failure(error.to_string(), attempt.clone()))?;
@@ -1439,14 +1866,18 @@ impl OpenAIProvider {
         if !status.is_success() {
             attempt.state = AttemptState::HttpRejected;
             let retry_after = extract_retry_after_header(response.headers());
-            let error_text = response.text().await.map_err(|source| {
-                mark_outcome_unknown(&mut attempt);
-                request_failure(
-                    "read Responses error response",
-                    source.into(),
-                    attempt.clone(),
-                )
+            let error_bytes = read_bounded_response_body(
+                response,
+                self.responses_transport_profile
+                    .resource_limits
+                    .max_http_error_body_bytes,
+                OpenAIResponsesResourceLimitKind::HttpErrorBodyBytes,
+            )
+            .await
+            .map_err(|error| {
+                bounded_body_failure("read Responses error response", error, &mut attempt)
             })?;
+            let error_text = String::from_utf8_lossy(&error_bytes).into_owned();
             attempt.provider_error = parse_http_error_evidence(&error_text);
             return Err(request_failure(
                 "Responses endpoint rejected request",
@@ -1456,16 +1887,27 @@ impl OpenAIProvider {
         }
 
         let terminal = if prepared.controls.stream {
-            parse_stream_terminal(response, &mut attempt)
-                .await
-                .map_err(|source| {
-                    mark_outcome_unknown(&mut attempt);
-                    request_failure("parse Responses stream", source, attempt.clone())
-                })?
-        } else {
-            let bytes = response.bytes().await.map_err(|source| {
+            parse_stream_terminal(
+                response,
+                &self.responses_transport_profile.resource_limits,
+                &mut attempt,
+            )
+            .await
+            .map_err(|source| {
                 mark_outcome_unknown(&mut attempt);
-                request_failure("read Responses response", source.into(), attempt.clone())
+                request_failure("parse Responses stream", source, attempt.clone())
+            })?
+        } else {
+            let bytes = read_bounded_response_body(
+                response,
+                self.responses_transport_profile
+                    .resource_limits
+                    .max_json_response_bytes,
+                OpenAIResponsesResourceLimitKind::JsonResponseBytes,
+            )
+            .await
+            .map_err(|error| {
+                bounded_body_failure("read Responses response", error, &mut attempt)
             })?;
             let value: Value = serde_json::from_slice(&bytes).map_err(|source| {
                 mark_outcome_unknown(&mut attempt);
@@ -1475,7 +1917,13 @@ impl OpenAIProvider {
                     attempt.clone(),
                 )
             })?;
-            parse_terminal_response(&value, None, &mut attempt).map_err(|message| {
+            parse_terminal_response(
+                &value,
+                None,
+                &self.responses_transport_profile.resource_limits,
+                &mut attempt,
+            )
+            .map_err(|message| {
                 mark_outcome_unknown(&mut attempt);
                 request_failure(
                     "validate Responses terminal",
@@ -1503,7 +1951,7 @@ impl OpenAIProvider {
                 status_code: status.as_u16(),
                 projection_digest: prepared.projection_digest.clone(),
                 controls_digest: prepared.controls_digest.clone(),
-                transport_policy_digest: prepared.transport_policy_digest.clone(),
+                transport_policy_digest: prepared.transport_profile_digest.clone(),
                 requested_model: prepared.projection.model.clone(),
                 returned_model: terminal.returned_model,
                 response_id: terminal.response_id,
@@ -1514,6 +1962,8 @@ impl OpenAIProvider {
                 provider_error: terminal.provider_error,
                 incomplete_reason: terminal.incomplete_reason,
                 returned_reasoning: terminal.returned_reasoning,
+                terminal_event_name: terminal.terminal_event_name,
+                terminal_json_type: terminal.terminal_json_type,
                 observed_tool_events: terminal.observed_tool_events,
                 observed_refusals: terminal.observed_refusals,
             },
@@ -1532,7 +1982,7 @@ impl OpenAIProvider {
             endpoint,
             projection_digest: prepared.projection_digest.clone(),
             controls_digest: include_controls.then(|| prepared.controls_digest.clone()),
-            transport_policy_digest: prepared.transport_policy_digest.clone(),
+            transport_policy_digest: prepared.transport_profile_digest.clone(),
             state: AttemptState::NotStarted,
             status_code: None,
             request_id: None,
@@ -1544,6 +1994,10 @@ impl OpenAIProvider {
             provider_error: None,
             incomplete_reason: None,
             returned_reasoning: None,
+            stream_event_name: None,
+            stream_json_type: None,
+            stream_sequence_number: None,
+            resource_limit: None,
             observed_tool_events: Vec::new(),
             observed_refusals: Vec::new(),
         }
@@ -1571,6 +2025,89 @@ fn request_failure(
         source,
         attempt,
     })
+}
+
+#[derive(Debug, thiserror::Error)]
+enum BoundedBodyReadError {
+    #[error("Responses body transport failed: {0}")]
+    Transport(#[from] reqwest::Error),
+    #[error(
+        "Responses resource limit {kind:?} exceeded: observed {observed} bytes/items, limit {limit}"
+    )]
+    Limit {
+        kind: OpenAIResponsesResourceLimitKind,
+        limit: u64,
+        observed: u64,
+    },
+}
+
+impl BoundedBodyReadError {
+    fn limit_evidence(&self) -> Option<OpenAIResponsesResourceLimitEvidence> {
+        match self {
+            Self::Limit {
+                kind,
+                limit,
+                observed,
+            } => Some(OpenAIResponsesResourceLimitEvidence {
+                kind: *kind,
+                limit: *limit,
+                observed: *observed,
+            }),
+            Self::Transport(_) => None,
+        }
+    }
+
+    fn into_llm_error(self) -> LlmError {
+        match self {
+            Self::Transport(error) => error.into(),
+            limit @ Self::Limit { .. } => LlmError::Stream(limit.to_string()),
+        }
+    }
+}
+
+async fn read_bounded_response_body(
+    response: reqwest::Response,
+    limit: u64,
+    kind: OpenAIResponsesResourceLimitKind,
+) -> Result<Vec<u8>, BoundedBodyReadError> {
+    if let Some(content_length) = response.content_length()
+        && content_length > limit
+    {
+        return Err(BoundedBodyReadError::Limit {
+            kind,
+            limit,
+            observed: content_length,
+        });
+    }
+
+    let mut body = Vec::new();
+    let mut observed = 0_u64;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        observed = observed.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        if observed > limit {
+            return Err(BoundedBodyReadError::Limit {
+                kind,
+                limit,
+                observed,
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn bounded_body_failure(
+    message: &'static str,
+    error: BoundedBodyReadError,
+    attempt: &mut OpenAIResponsesAttemptReceipt,
+) -> OpenAIResponsesError {
+    if let Some(evidence) = error.limit_evidence() {
+        attempt.resource_limit = Some(evidence);
+    }
+    mark_outcome_unknown(attempt);
+    request_failure(message, error.into_llm_error(), attempt.clone())
 }
 
 fn endpoint_url(base_url: &str, path: &str) -> String {
@@ -1625,36 +2162,136 @@ fn parse_input_token_count(value: &Value) -> Result<u64, String> {
         .ok_or_else(|| "input-token response omitted a valid input_tokens count".into())
 }
 
+#[derive(Debug)]
+struct OpenAIResponsesSseEvent {
+    name: String,
+    data: String,
+}
+
+#[derive(Default)]
+struct SseByteTracker {
+    total_bytes: u64,
+    current_event_bytes: u64,
+    line_has_content: bool,
+    previous_was_cr: bool,
+}
+
+impl SseByteTracker {
+    fn observe(
+        &mut self,
+        bytes: &[u8],
+        limits: &OpenAIResponsesResourceLimits,
+    ) -> Result<(), OpenAIResponsesResourceLimitEvidence> {
+        self.total_bytes = self
+            .total_bytes
+            .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        if self.total_bytes > limits.max_sse_total_bytes {
+            return Err(OpenAIResponsesResourceLimitEvidence {
+                kind: OpenAIResponsesResourceLimitKind::SseTotalBytes,
+                limit: limits.max_sse_total_bytes,
+                observed: self.total_bytes,
+            });
+        }
+
+        for byte in bytes {
+            self.current_event_bytes = self.current_event_bytes.saturating_add(1);
+            match *byte {
+                b'\r' => {
+                    self.finish_line();
+                    self.previous_was_cr = true;
+                }
+                b'\n' if self.previous_was_cr => {
+                    self.previous_was_cr = false;
+                    if self.current_event_bytes == 1 {
+                        self.current_event_bytes = 0;
+                    }
+                }
+                b'\n' => self.finish_line(),
+                _ => {
+                    self.previous_was_cr = false;
+                    self.line_has_content = true;
+                }
+            }
+            if self.current_event_bytes > limits.max_sse_event_bytes {
+                return Err(OpenAIResponsesResourceLimitEvidence {
+                    kind: OpenAIResponsesResourceLimitKind::SseEventBytes,
+                    limit: limits.max_sse_event_bytes,
+                    observed: self.current_event_bytes,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn finish_line(&mut self) {
+        if self.line_has_content {
+            self.line_has_content = false;
+        } else {
+            self.current_event_bytes = 0;
+        }
+    }
+}
+
 async fn parse_stream_terminal(
     response: reqwest::Response,
+    limits: &OpenAIResponsesResourceLimits,
     attempt: &mut OpenAIResponsesAttemptReceipt,
 ) -> Result<ParsedTerminal, LlmError> {
-    let events = response
-        .bytes_stream()
-        .eventsource()
-        .map(|event| event.map(|event| event.data));
-    parse_stream_event_data(events, attempt).await
+    let mut tracker = SseByteTracker::default();
+    let limit_evidence = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let writer = limit_evidence.clone();
+    let limits_for_stream = limits.clone();
+    let bounded_bytes = response.bytes_stream().map(move |chunk| {
+        let chunk = chunk.map_err(BoundedBodyReadError::Transport)?;
+        tracker
+            .observe(&chunk, &limits_for_stream)
+            .map_err(|evidence| {
+                *writer.lock().expect("SSE limit evidence mutex poisoned") = Some(evidence.clone());
+                BoundedBodyReadError::Limit {
+                    kind: evidence.kind,
+                    limit: evidence.limit,
+                    observed: evidence.observed,
+                }
+            })?;
+        Ok::<_, BoundedBodyReadError>(chunk)
+    });
+    let events = bounded_bytes.eventsource().map(|event| {
+        event.map(|event| OpenAIResponsesSseEvent {
+            name: event.event,
+            data: event.data,
+        })
+    });
+    let result = parse_stream_event_data(events, limits, attempt).await;
+    if let Some(evidence) = limit_evidence
+        .lock()
+        .expect("SSE limit evidence mutex poisoned")
+        .clone()
+    {
+        attempt.resource_limit = Some(evidence);
+    }
+    result
 }
 
 async fn parse_stream_event_data<S, E>(
     events: S,
+    limits: &OpenAIResponsesResourceLimits,
     attempt: &mut OpenAIResponsesAttemptReceipt,
 ) -> Result<ParsedTerminal, LlmError>
 where
-    S: futures::Stream<Item = Result<String, E>>,
+    S: futures::Stream<Item = Result<OpenAIResponsesSseEvent, E>>,
     E: fmt::Display,
 {
     futures::pin_mut!(events);
     let mut last_sequence = None;
 
     while let Some(event) = events.next().await {
-        let data = event.map_err(|error| LlmError::Stream(error.to_string()))?;
-        if data == "[DONE]" {
+        let event = event.map_err(|error| LlmError::Stream(error.to_string()))?;
+        if event.data == "[DONE]" {
             return Err(LlmError::Stream(
                 "Responses stream ended before a terminal event".into(),
             ));
         }
-        let value: Value = serde_json::from_str(&data)?;
+        let value: Value = serde_json::from_str(&event.data)?;
         let sequence = value
             .get("sequence_number")
             .and_then(Value::as_u64)
@@ -1671,29 +2308,39 @@ where
             .get("type")
             .and_then(Value::as_str)
             .ok_or_else(|| LlmError::Stream("Responses stream event omitted type".into()))?;
-        observe_stream_tool_event(&value, event_type, &mut attempt.observed_tool_events)?;
-        observe_stream_refusal_event(&value, event_type, &mut attempt.observed_refusals)?;
-        if matches!(
-            event_type,
-            "response.completed" | "response.incomplete" | "response.failed"
-        ) {
+        attempt.stream_event_name = Some(event.name.clone());
+        attempt.stream_json_type = Some(event_type.into());
+        attempt.stream_sequence_number = Some(sequence);
+        observe_stream_tool_event(&value, event_type, limits, attempt)?;
+        observe_stream_refusal_event(&value, event_type, limits, attempt)?;
+
+        let envelope_status = terminal_status_for_event_type(&event.name);
+        let json_status = terminal_status_for_event_type(event_type);
+        if envelope_status.is_some() || json_status.is_some() {
             let response_value = value.get("response").ok_or_else(|| {
                 LlmError::Stream("Responses terminal event omitted response".into())
             })?;
-            let terminal = parse_terminal_response(response_value, Some(sequence), attempt)
-                .map_err(LlmError::Stream)?;
-            let expected = match event_type {
-                "response.completed" => ResponsesTerminalStatus::Completed,
-                "response.incomplete" => ResponsesTerminalStatus::Incomplete,
-                "response.failed" => ResponsesTerminalStatus::Failed,
-                _ => unreachable!(),
-            };
-            if terminal.terminal_status != expected {
+            let terminal = parse_terminal_response(
+                response_value,
+                Some((&event.name, event_type, sequence)),
+                limits,
+                attempt,
+            )
+            .map_err(LlmError::Stream)?;
+            if event.name != event_type
+                || envelope_status != json_status
+                || json_status != Some(terminal.terminal_status)
+            {
                 return Err(LlmError::Stream(
-                    "Responses terminal event type does not match response status".into(),
+                    "Responses SSE event name, JSON type, and response status do not agree".into(),
                 ));
             }
             return Ok(terminal);
+        }
+        if event.name != event_type {
+            return Err(LlmError::Stream(
+                "Responses SSE event name does not match JSON type".into(),
+            ));
         }
         if event_type == "error" {
             let error = parse_provider_error_object(
@@ -1717,9 +2364,20 @@ where
     ))
 }
 
+fn terminal_status_for_event_type(event_type: &str) -> Option<ResponsesTerminalStatus> {
+    match event_type {
+        "response.completed" => Some(ResponsesTerminalStatus::Completed),
+        "response.incomplete" => Some(ResponsesTerminalStatus::Incomplete),
+        "response.failed" => Some(ResponsesTerminalStatus::Failed),
+        "response.cancelled" => Some(ResponsesTerminalStatus::Cancelled),
+        _ => None,
+    }
+}
+
 fn parse_terminal_response(
     value: &Value,
-    sequence_number: Option<u64>,
+    stream_envelope: Option<(&str, &str, u64)>,
+    limits: &OpenAIResponsesResourceLimits,
     attempt: &mut OpenAIResponsesAttemptReceipt,
 ) -> Result<ParsedTerminal, String> {
     let object = value
@@ -1734,6 +2392,7 @@ fn parse_terminal_response(
         Some("completed") => ResponsesTerminalStatus::Completed,
         Some("incomplete") => ResponsesTerminalStatus::Incomplete,
         Some("failed") => ResponsesTerminalStatus::Failed,
+        Some("cancelled") => ResponsesTerminalStatus::Cancelled,
         Some(other) => return Err(format!("Responses status is not terminal: {other}")),
         None => return Err("Responses terminal omitted status".into()),
     };
@@ -1744,11 +2403,7 @@ fn parse_terminal_response(
     attempt.terminal_status = Some(terminal_status);
     let usage = normalize_responses_usage(object.get("usage"));
     attempt.terminal_usage = Some(usage.clone());
-    observe_terminal_payload(
-        object,
-        &mut attempt.observed_tool_events,
-        &mut attempt.observed_refusals,
-    );
+    observe_terminal_payload(object, limits, attempt)?;
 
     let provider_error = parse_optional_provider_error(object.get("error"), true)?;
     attempt.provider_error = provider_error.clone();
@@ -1769,11 +2424,17 @@ fn parse_terminal_response(
         .ok_or_else(|| "Responses terminal omitted output array".to_string())?;
     let (output_text, output_tools, output_refusals) = parse_response_output(output)?;
     for observed in output_tools {
-        push_unique_tool(&mut attempt.observed_tool_events, observed);
+        push_unique_tool(attempt, observed, limits)?;
     }
     for refusal in output_refusals {
-        push_unique_refusal(&mut attempt.observed_refusals, refusal);
+        push_unique_refusal(attempt, refusal, limits)?;
     }
+
+    let (terminal_event_name, terminal_json_type, sequence_number) = stream_envelope
+        .map(|(name, json_type, sequence)| {
+            (Some(name.into()), Some(json_type.into()), Some(sequence))
+        })
+        .unwrap_or((None, None, None));
 
     Ok(ParsedTerminal {
         response_id,
@@ -1785,6 +2446,8 @@ fn parse_terminal_response(
         provider_error,
         incomplete_reason,
         returned_reasoning,
+        terminal_event_name,
+        terminal_json_type,
         output_text,
         observed_tool_events: attempt.observed_tool_events.clone(),
         observed_refusals: attempt.observed_refusals.clone(),
@@ -1814,6 +2477,12 @@ fn validate_terminal_consistency(
         }
         ResponsesTerminalStatus::Failed if incomplete_reason.is_some() => {
             Err("failed Responses terminal cannot contain incomplete_details".into())
+        }
+        ResponsesTerminalStatus::Cancelled if error.is_some() => {
+            Err("cancelled Responses terminal cannot contain error".into())
+        }
+        ResponsesTerminalStatus::Cancelled if incomplete_reason.is_some() => {
+            Err("cancelled Responses terminal cannot contain incomplete_details".into())
         }
         _ => Ok(()),
     }
@@ -1954,15 +2623,16 @@ fn parse_response_output(
                                 .ok_or_else(|| {
                                     "Responses refusal block omitted refusal".to_string()
                                 })?;
-                            push_unique_refusal(
-                                &mut refusals,
-                                OpenAIResponsesObservedRefusal {
-                                    event_type: "message.refusal".into(),
-                                    item_id: item_id.clone(),
-                                    text: refusal.into(),
-                                    sequence_number: None,
-                                },
-                            );
+                            let observed = OpenAIResponsesObservedRefusal {
+                                event_type: "message.refusal".into(),
+                                item_id: item_id.clone(),
+                                text: refusal.into(),
+                                sequence_number: None,
+                                malformed: false,
+                            };
+                            if !refusals.contains(&observed) {
+                                refusals.push(observed);
+                            }
                         }
                         Some(other) => {
                             return Err(format!(
@@ -1976,7 +2646,12 @@ fn parse_response_output(
                 }
             }
             "reasoning" => {}
-            _ => push_unique_tool(&mut tools, strict_tool_from_item(object, item_type)?),
+            _ => {
+                let observed = strict_tool_from_item(object, item_type)?;
+                if !tools.contains(&observed) {
+                    tools.push(observed);
+                }
+            }
         }
     }
     Ok((text, tools, refusals))
@@ -1985,7 +2660,8 @@ fn parse_response_output(
 fn observe_stream_tool_event(
     event: &Value,
     event_type: &str,
-    observed: &mut Vec<OpenAIResponsesObservedToolEvent>,
+    limits: &OpenAIResponsesResourceLimits,
+    attempt: &mut OpenAIResponsesAttemptReceipt,
 ) -> Result<(), LlmError> {
     let object = event
         .as_object()
@@ -1999,24 +2675,45 @@ fn observe_stream_tool_event(
             .and_then(Value::as_str)
             .ok_or_else(|| LlmError::Stream("Responses output item omitted type".into()))?;
         if !matches!(item_type, "message" | "reasoning") {
-            push_unique_tool(
-                observed,
-                strict_tool_from_item(item, item_type).map_err(LlmError::Stream)?,
-            );
+            let index = record_pending_tool_witness(
+                attempt,
+                lossy_tool_from_item(item, item_type, true),
+                limits,
+            )
+            .map_err(LlmError::Stream)?;
+            let strict = strict_tool_from_item(item, item_type).map_err(LlmError::Stream)?;
+            attempt.observed_tool_events[index] = strict;
         }
     } else if is_tool_activity_event(event_type) {
-        push_unique_tool(
-            observed,
-            OpenAIResponsesObservedToolEvent {
-                item_type: event_type.into(),
-                item_id: optional_nonempty_string_value(object.get("item_id"), "tool item_id")
-                    .map_err(LlmError::Stream)?,
-                call_id: optional_nonempty_string_value(object.get("call_id"), "tool call_id")
-                    .map_err(LlmError::Stream)?,
-                name: optional_nonempty_string_value(object.get("name"), "tool name")
-                    .map_err(LlmError::Stream)?,
-            },
-        );
+        let pending = OpenAIResponsesObservedToolEvent {
+            item_type: event_type.into(),
+            item_id: object
+                .get("item_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            call_id: object
+                .get("call_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            name: object
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            malformed: true,
+        };
+        let index =
+            record_pending_tool_witness(attempt, pending, limits).map_err(LlmError::Stream)?;
+        let strict = OpenAIResponsesObservedToolEvent {
+            item_type: event_type.into(),
+            item_id: optional_nonempty_string_value(object.get("item_id"), "tool item_id")
+                .map_err(LlmError::Stream)?,
+            call_id: optional_nonempty_string_value(object.get("call_id"), "tool call_id")
+                .map_err(LlmError::Stream)?,
+            name: optional_nonempty_string_value(object.get("name"), "tool name")
+                .map_err(LlmError::Stream)?,
+            malformed: false,
+        };
+        attempt.observed_tool_events[index] = strict;
     }
     Ok(())
 }
@@ -2035,12 +2732,14 @@ fn strict_tool_from_item(
         item_id: optional_nonempty_string_value(object.get("id"), "tool item id")?,
         call_id: optional_nonempty_string_value(object.get("call_id"), "tool call id")?,
         name: optional_nonempty_string_value(object.get("name"), "tool name")?,
+        malformed: false,
     })
 }
 
 fn lossy_tool_from_item(
     object: &Map<String, Value>,
     item_type: &str,
+    malformed: bool,
 ) -> OpenAIResponsesObservedToolEvent {
     OpenAIResponsesObservedToolEvent {
         item_type: item_type.into(),
@@ -2053,13 +2752,15 @@ fn lossy_tool_from_item(
             .get("name")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        malformed,
     }
 }
 
 fn observe_stream_refusal_event(
     event: &Value,
     event_type: &str,
-    observed: &mut Vec<OpenAIResponsesObservedRefusal>,
+    limits: &OpenAIResponsesResourceLimits,
+    attempt: &mut OpenAIResponsesAttemptReceipt,
 ) -> Result<(), LlmError> {
     let text_field = match event_type {
         "response.refusal.delta" => "delta",
@@ -2069,6 +2770,22 @@ fn observe_stream_refusal_event(
     let object = event
         .as_object()
         .ok_or_else(|| LlmError::Stream("Responses refusal event must be an object".into()))?;
+    let pending = OpenAIResponsesObservedRefusal {
+        event_type: event_type.into(),
+        item_id: object
+            .get("item_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        text: object
+            .get(text_field)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        sequence_number: object.get("sequence_number").and_then(Value::as_u64),
+        malformed: true,
+    };
+    let index =
+        record_pending_refusal_witness(attempt, pending, limits).map_err(LlmError::Stream)?;
     let item_id = object
         .get("item_id")
         .and_then(Value::as_str)
@@ -2080,25 +2797,23 @@ fn observe_stream_refusal_event(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| LlmError::Stream(format!("Responses refusal event omitted {text_field}")))?;
     let sequence_number = object.get("sequence_number").and_then(Value::as_u64);
-    push_unique_refusal(
-        observed,
-        OpenAIResponsesObservedRefusal {
-            event_type: event_type.into(),
-            item_id: Some(item_id.into()),
-            text: text.into(),
-            sequence_number,
-        },
-    );
+    attempt.observed_refusals[index] = OpenAIResponsesObservedRefusal {
+        event_type: event_type.into(),
+        item_id: Some(item_id.into()),
+        text: text.into(),
+        sequence_number,
+        malformed: false,
+    };
     Ok(())
 }
 
 fn observe_terminal_payload(
     object: &Map<String, Value>,
-    tools: &mut Vec<OpenAIResponsesObservedToolEvent>,
-    refusals: &mut Vec<OpenAIResponsesObservedRefusal>,
-) {
+    limits: &OpenAIResponsesResourceLimits,
+    attempt: &mut OpenAIResponsesAttemptReceipt,
+) -> Result<(), String> {
     let Some(output) = object.get("output").and_then(Value::as_array) else {
-        return;
+        return Ok(());
     };
     for item in output {
         let Some(item) = item.as_object() else {
@@ -2120,38 +2835,146 @@ fn observe_terminal_payload(
                     && let Some(text) = block.get("refusal").and_then(Value::as_str)
                 {
                     push_unique_refusal(
-                        refusals,
+                        attempt,
                         OpenAIResponsesObservedRefusal {
                             event_type: "message.refusal".into(),
                             item_id: item_id.clone(),
                             text: text.into(),
                             sequence_number: None,
+                            malformed: false,
                         },
-                    );
+                        limits,
+                    )?;
+                } else if block.get("type").and_then(Value::as_str) == Some("refusal") {
+                    record_pending_refusal_witness(
+                        attempt,
+                        OpenAIResponsesObservedRefusal {
+                            event_type: "message.refusal".into(),
+                            item_id: item_id.clone(),
+                            text: String::new(),
+                            sequence_number: None,
+                            malformed: true,
+                        },
+                        limits,
+                    )?;
                 }
             }
         } else if item_type != "reasoning" {
-            push_unique_tool(tools, lossy_tool_from_item(item, item_type));
+            let index = record_pending_tool_witness(
+                attempt,
+                lossy_tool_from_item(item, item_type, true),
+                limits,
+            )?;
+            if let Ok(strict) = strict_tool_from_item(item, item_type) {
+                attempt.observed_tool_events[index] = strict;
+            }
         }
     }
+    Ok(())
 }
 
 fn push_unique_tool(
-    tools: &mut Vec<OpenAIResponsesObservedToolEvent>,
+    attempt: &mut OpenAIResponsesAttemptReceipt,
     tool: OpenAIResponsesObservedToolEvent,
-) {
-    if !tools.contains(&tool) {
-        tools.push(tool);
+    limits: &OpenAIResponsesResourceLimits,
+) -> Result<(), String> {
+    if !attempt.observed_tool_events.contains(&tool) {
+        enforce_observation_limit(
+            attempt,
+            OpenAIResponsesResourceLimitKind::ObservedToolEvents,
+            u64::from(limits.max_observed_tool_events),
+            attempt.observed_tool_events.len(),
+        )?;
+        attempt.observed_tool_events.push(tool);
     }
+    Ok(())
 }
 
 fn push_unique_refusal(
-    refusals: &mut Vec<OpenAIResponsesObservedRefusal>,
+    attempt: &mut OpenAIResponsesAttemptReceipt,
     refusal: OpenAIResponsesObservedRefusal,
-) {
-    if !refusals.contains(&refusal) {
-        refusals.push(refusal);
+    limits: &OpenAIResponsesResourceLimits,
+) -> Result<(), String> {
+    if !attempt.observed_refusals.contains(&refusal) {
+        enforce_observation_limit(
+            attempt,
+            OpenAIResponsesResourceLimitKind::ObservedRefusals,
+            u64::from(limits.max_observed_refusals),
+            attempt.observed_refusals.len(),
+        )?;
+        attempt.observed_refusals.push(refusal);
     }
+    Ok(())
+}
+
+fn record_pending_tool_witness(
+    attempt: &mut OpenAIResponsesAttemptReceipt,
+    witness: OpenAIResponsesObservedToolEvent,
+    limits: &OpenAIResponsesResourceLimits,
+) -> Result<usize, String> {
+    if let Some(index) = attempt.observed_tool_events.iter().position(|existing| {
+        existing.item_type == witness.item_type
+            && existing.item_id == witness.item_id
+            && existing.call_id == witness.call_id
+            && existing.name == witness.name
+    }) {
+        attempt.observed_tool_events[index].malformed |= witness.malformed;
+        return Ok(index);
+    }
+    enforce_observation_limit(
+        attempt,
+        OpenAIResponsesResourceLimitKind::ObservedToolEvents,
+        u64::from(limits.max_observed_tool_events),
+        attempt.observed_tool_events.len(),
+    )?;
+    attempt.observed_tool_events.push(witness);
+    Ok(attempt.observed_tool_events.len() - 1)
+}
+
+fn record_pending_refusal_witness(
+    attempt: &mut OpenAIResponsesAttemptReceipt,
+    witness: OpenAIResponsesObservedRefusal,
+    limits: &OpenAIResponsesResourceLimits,
+) -> Result<usize, String> {
+    if let Some(index) = attempt.observed_refusals.iter().position(|existing| {
+        existing.event_type == witness.event_type
+            && existing.item_id == witness.item_id
+            && existing.text == witness.text
+            && existing.sequence_number == witness.sequence_number
+    }) {
+        attempt.observed_refusals[index].malformed |= witness.malformed;
+        return Ok(index);
+    }
+    enforce_observation_limit(
+        attempt,
+        OpenAIResponsesResourceLimitKind::ObservedRefusals,
+        u64::from(limits.max_observed_refusals),
+        attempt.observed_refusals.len(),
+    )?;
+    attempt.observed_refusals.push(witness);
+    Ok(attempt.observed_refusals.len() - 1)
+}
+
+fn enforce_observation_limit(
+    attempt: &mut OpenAIResponsesAttemptReceipt,
+    kind: OpenAIResponsesResourceLimitKind,
+    limit: u64,
+    current_len: usize,
+) -> Result<(), String> {
+    let observed = u64::try_from(current_len)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    if observed <= limit {
+        return Ok(());
+    }
+    attempt.resource_limit = Some(OpenAIResponsesResourceLimitEvidence {
+        kind,
+        limit,
+        observed,
+    });
+    Err(format!(
+        "Responses observation limit {kind:?} exceeded: observed {observed}, limit {limit}"
+    ))
 }
 
 fn normalize_responses_usage(value: Option<&Value>) -> Usage {
@@ -2321,8 +3144,15 @@ mod tests {
             }
         })
         .to_string();
-        let events = stream::once(async { Ok::<_, std::io::Error>(terminal) })
-            .chain(stream::pending::<Result<String, std::io::Error>>());
+        let events = stream::once(async {
+            Ok::<_, std::io::Error>(OpenAIResponsesSseEvent {
+                name: "response.completed".into(),
+                data: terminal,
+            })
+        })
+        .chain(stream::pending::<
+            Result<OpenAIResponsesSseEvent, std::io::Error>,
+        >());
         let mut attempt = OpenAIResponsesAttemptReceipt {
             schema_version: PROVIDER_RECEIPT_VERSION,
             provider_identity: OpenAIResponsesProviderIdentity::configured("https://example.test"),
@@ -2341,14 +3171,22 @@ mod tests {
             provider_error: None,
             incomplete_reason: None,
             returned_reasoning: None,
+            stream_event_name: None,
+            stream_json_type: None,
+            stream_sequence_number: None,
+            resource_limit: None,
             observed_tool_events: Vec::new(),
             observed_refusals: Vec::new(),
         };
 
-        let result = parse_stream_event_data(events, &mut attempt)
-            .now_or_never()
-            .expect("the first terminal event must complete without polling the pending tail")
-            .expect("valid terminal event");
+        let result = parse_stream_event_data(
+            events,
+            &OpenAIResponsesResourceLimits::bounded(),
+            &mut attempt,
+        )
+        .now_or_never()
+        .expect("the first terminal event must complete without polling the pending tail")
+        .expect("valid terminal event");
 
         assert_eq!(result.response_id, "resp_first_terminal");
         assert_eq!(result.sequence_number, Some(1));
