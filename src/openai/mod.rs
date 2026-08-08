@@ -58,6 +58,7 @@ pub enum ThinkingScheme {
 /// or `extra_body`.
 pub struct OpenAIProvider {
     client: reqwest::Client,
+    responses_client: reqwest::Client,
     api_key: String,
     base_url: String,
     chat_path: String,
@@ -99,6 +100,30 @@ fn extract_retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Du
     }
     // HTTP-date format: skip (would require extra dep; None is safe fallback)
     None
+}
+
+fn http_client_builder(
+    connect_timeout: Duration,
+    read_timeout: Duration,
+    request_timeout: Option<Duration>,
+) -> reqwest::ClientBuilder {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .read_timeout(read_timeout);
+    if let Some(timeout) = request_timeout {
+        builder = builder.timeout(timeout);
+    }
+    builder
+}
+
+fn strict_responses_client_builder(
+    connect_timeout: Duration,
+    read_timeout: Duration,
+    request_timeout: Option<Duration>,
+) -> reqwest::ClientBuilder {
+    http_client_builder(connect_timeout, read_timeout, request_timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
 }
 
 impl OpenAIProvider {
@@ -450,16 +475,20 @@ impl OpenAIProviderBuilder {
 
     /// Build the OpenAIProvider instance.
     pub fn build(self) -> OpenAIProvider {
+        let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
+        let read_timeout = self.read_timeout.unwrap_or(Duration::from_secs(60));
+        let request_timeout = self.request_timeout;
         OpenAIProvider {
-            client: {
-                let mut b = reqwest::Client::builder()
-                    .connect_timeout(self.connect_timeout.unwrap_or(Duration::from_secs(30)))
-                    .read_timeout(self.read_timeout.unwrap_or(Duration::from_secs(60)));
-                if let Some(rt) = self.request_timeout {
-                    b = b.timeout(rt);
-                }
-                b.build().expect("failed to build HTTP client")
-            },
+            client: http_client_builder(connect_timeout, read_timeout, request_timeout)
+                .build()
+                .expect("failed to build HTTP client"),
+            responses_client: strict_responses_client_builder(
+                connect_timeout,
+                read_timeout,
+                request_timeout,
+            )
+            .build()
+            .expect("failed to build strict Responses HTTP client"),
             api_key: self.api_key,
             base_url: self.base_url,
             chat_path: self.chat_path,
@@ -507,5 +536,79 @@ impl Provider for OpenAIProvider {
 impl EmbeddingProvider for OpenAIProvider {
     async fn embed(&self, req: &EmbeddingRequest) -> Result<EmbeddingResponse, LlmError> {
         self.embed_native(req).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strict_responses_client_builder;
+    use bytes::Bytes;
+    use h2::Reason;
+    use http::Response;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn strict_responses_client_does_not_retry_http2_refused_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind h2");
+        let address = listener.local_addr().expect("h2 address");
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server_requests = Arc::clone(&requests);
+        let server = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                let (socket, _) = listener.accept().await.expect("accept h2");
+                let connection_requests = Arc::clone(&server_requests);
+                connections.spawn(async move {
+                    let mut connection = h2::server::handshake(socket).await.expect("h2 handshake");
+                    while let Some(request) = connection.accept().await {
+                        let (_request, mut respond) = request.expect("h2 request");
+                        let attempt = connection_requests.fetch_add(1, Ordering::SeqCst);
+                        if attempt == 0 {
+                            respond.send_reset(Reason::REFUSED_STREAM);
+                        } else {
+                            let response = Response::builder()
+                                .status(200)
+                                .header("content-type", "application/json")
+                                .body(())
+                                .expect("h2 response");
+                            let mut body = respond
+                                .send_response(response, false)
+                                .expect("send h2 response");
+                            body.send_data(Bytes::from_static(b"{}"), true)
+                                .expect("send h2 body");
+                        }
+                    }
+                });
+            }
+        });
+        let client = strict_responses_client_builder(
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            Some(Duration::from_secs(2)),
+        )
+        .http2_prior_knowledge()
+        .no_proxy()
+        .build()
+        .expect("strict h2 client");
+
+        let error = client
+            .post(format!("http://{address}/v1/responses"))
+            .body("{}")
+            .send()
+            .await
+            .expect_err("REFUSED_STREAM must not be retried");
+
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "unexpected strict-client error: {error:#?}"
+        );
+        server.abort();
+        let _ = server.await;
     }
 }

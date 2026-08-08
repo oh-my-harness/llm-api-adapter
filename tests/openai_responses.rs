@@ -13,6 +13,7 @@ use llm_adapter::openai::{
 };
 use llm_adapter::{UsageProvenance, openai::responses::OpenAIResponsesError};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -181,7 +182,7 @@ async fn count_and_response_are_derived_from_one_immutable_projection() {
         OpenAIResponsesServiceTier::Default
     );
     assert!(call.controls().include().is_empty());
-    assert!(!call.controls().has_implicit_retry());
+    assert_eq!(call.transport_policy().max_http_attempts(), 1);
     assert_eq!(response_body["tools"], json!([]));
     assert_eq!(response_body["tool_choice"], "none");
     assert!(response_body.get("max_tool_calls").is_none());
@@ -565,30 +566,38 @@ async fn response_create_never_follows_redirect_chains() {
 
 #[tokio::test]
 async fn input_token_count_never_follows_redirects() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/responses/input_tokens"))
-        .respond_with(ResponseTemplate::new(307).append_header("location", "/redirected-count"))
-        .mount(&server)
+    for status in [301, 302, 307, 308] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses/input_tokens"))
+            .respond_with(
+                ResponseTemplate::new(status).append_header("location", "/redirected-count"),
+            )
+            .mount(&server)
+            .await;
+        mount_json(
+            &server,
+            "/redirected-count",
+            include_str!("fixtures/openai/responses_input_tokens.json"),
+            "req_redirected_count",
+        )
         .await;
-    mount_json(
-        &server,
-        "/redirected-count",
-        include_str!("fixtures/openai/responses_input_tokens.json"),
-        "req_redirected_count",
-    )
-    .await;
 
-    let error = provider(&server)
-        .count_response_input_tokens(&prepared(false))
-        .await
-        .expect_err("count transport must reject redirects");
+        let error = provider(&server)
+            .count_response_input_tokens(&prepared(false))
+            .await
+            .expect_err("count transport must reject redirects");
 
-    assert_eq!(error.attempt().state(), AttemptState::HttpRejected);
-    assert_eq!(error.attempt().status_code(), Some(307));
-    let requests = server.received_requests().await.expect("request log");
-    assert_eq!(requests.len(), 1, "count endpoint was retried by redirect");
-    assert_eq!(requests[0].url.path(), "/v1/responses/input_tokens");
+        assert_eq!(error.attempt().state(), AttemptState::HttpRejected);
+        assert_eq!(error.attempt().status_code(), Some(status));
+        let requests = server.received_requests().await.expect("request log");
+        assert_eq!(
+            requests.len(),
+            1,
+            "count endpoint was retried by status {status}"
+        );
+        assert_eq!(requests[0].url.path(), "/v1/responses/input_tokens");
+    }
 }
 
 #[tokio::test]
@@ -696,6 +705,592 @@ async fn completed_terminal_with_provider_error_is_rejected() {
             .attempt()
             .terminal_usage()
             .expect("known terminal usage")
+            .provenance,
+        UsageProvenance::ReportedValid
+    );
+}
+
+#[tokio::test]
+async fn prepared_call_binds_canonical_transport_policy_and_jcs_profile() {
+    let server = MockServer::start().await;
+    let call = prepared(false);
+    assert_eq!(call.transport_policy().max_http_attempts(), 1);
+    assert_eq!(
+        call.transport_policy_digest(),
+        call.transport_policy().digest().expect("policy digest")
+    );
+
+    let mut wire = serde_json::to_value(&call).expect("prepared wire");
+    wire["transport_policy"]["max_http_attempts"] = json!(2);
+    let forged_digest_input = json!({
+        "digest_serialization_profile": "rfc8785-jcs/v1",
+        "transport_policy": wire["transport_policy"].clone(),
+    });
+    wire["transport_policy_digest"] = Value::String(format!(
+        "sha256:{:x}",
+        Sha256::digest(serde_jcs::to_vec(&forged_digest_input).expect("JCS"))
+    ));
+    let forged: PreparedOpenAIResponse =
+        serde_json::from_value(wire).expect("typed forged transport policy");
+
+    provider(&server)
+        .create_response(&forged)
+        .await
+        .expect_err("self-consistent non-canonical transport policy must fail");
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn direct_predecessor_request_contract_versions_are_rejected_before_http() {
+    for (pointer, predecessor) in [
+        ("/schema_version", "openai-prepared-response/v1"),
+        (
+            "/projection/schema_version",
+            "openai-responses-token-relevant-request-projection/v1",
+        ),
+        ("/controls/schema_version", "openai-responses-controls/v1"),
+        (
+            "/transport_policy/schema_version",
+            "openai-responses-transport-policy/v0",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let mut wire = serde_json::to_value(prepared(false)).expect("prepared wire");
+        *wire.pointer_mut(pointer).expect("version field") = json!(predecessor);
+        let old: PreparedOpenAIResponse =
+            serde_json::from_value(wire).expect("typed predecessor call");
+
+        provider(&server)
+            .create_response(&old)
+            .await
+            .expect_err("direct predecessor contract must fail");
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn count_and_create_receipts_bind_the_transport_policy_digest() {
+    let server = MockServer::start().await;
+    mount_json(
+        &server,
+        "/v1/responses/input_tokens",
+        include_str!("fixtures/openai/responses_input_tokens.json"),
+        "req_policy_count",
+    )
+    .await;
+    mount_json(
+        &server,
+        "/v1/responses",
+        include_str!("fixtures/openai/responses_completed.json"),
+        "req_policy_create",
+    )
+    .await;
+    let call = prepared(false);
+    let count = provider(&server)
+        .count_response_input_tokens(&call)
+        .await
+        .expect("count");
+    let response = provider(&server)
+        .create_response(&call)
+        .await
+        .expect("create");
+
+    assert_eq!(
+        count.transport_policy_digest(),
+        call.transport_policy_digest()
+    );
+    assert_eq!(
+        response.receipt().transport_policy_digest(),
+        call.transport_policy_digest()
+    );
+}
+
+#[tokio::test]
+async fn terminal_receipt_preserves_actual_service_tier_and_reasoning_identity() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["service_tier"] = json!("priority");
+    response["reasoning"] = json!({
+        "effort": "high",
+        "context": "all_turns",
+        "mode": "pro",
+        "summary": "detailed"
+    });
+    mount_json_value(
+        &server,
+        "/v1/responses",
+        &response,
+        "req_execution_identity",
+    )
+    .await;
+
+    let result = provider(&server)
+        .create_response(&prepared(false))
+        .await
+        .expect("terminal receipt");
+    let receipt = result.receipt();
+
+    assert_eq!(receipt.returned_service_tier(), Some("priority"));
+    let reasoning = receipt.returned_reasoning().expect("returned reasoning");
+    assert_eq!(reasoning.effort(), Some("high"));
+    assert_eq!(reasoning.context(), Some("all_turns"));
+    assert_eq!(reasoning.mode(), Some("pro"));
+    assert_eq!(reasoning.summary(), Some("detailed"));
+}
+
+#[tokio::test]
+async fn missing_actual_service_tier_fails_with_terminal_accounting() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response
+        .as_object_mut()
+        .expect("response object")
+        .remove("service_tier");
+    mount_json_value(
+        &server,
+        "/v1/responses",
+        &response,
+        "req_missing_service_tier",
+    )
+    .await;
+
+    let error = provider(&server)
+        .create_response(&prepared(false))
+        .await
+        .expect_err("actual service tier is required identity evidence");
+
+    assert_eq!(error.attempt().state(), AttemptState::TerminalObserved);
+    assert_eq!(error.attempt().returned_service_tier(), None);
+    assert_eq!(
+        error
+            .attempt()
+            .terminal_usage()
+            .expect("known usage")
+            .provenance,
+        UsageProvenance::ReportedValid
+    );
+}
+
+#[tokio::test]
+async fn non_stream_refusal_is_explicit_terminal_evidence() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["output"] = json!([{
+        "id": "msg_refusal",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{
+            "type": "refusal",
+            "refusal": "I cannot provide that output."
+        }]
+    }]);
+    mount_json_value(&server, "/v1/responses", &response, "req_refusal").await;
+
+    let result = provider(&server)
+        .create_response(&prepared(false))
+        .await
+        .expect("refusal is a known provider terminal");
+
+    assert_eq!(result.output_text(), "");
+    let refusals = result.receipt().observed_refusals();
+    assert_eq!(refusals.len(), 1);
+    assert_eq!(refusals[0].event_type(), "message.refusal");
+    assert_eq!(refusals[0].item_id(), Some("msg_refusal"));
+    assert_eq!(refusals[0].text(), "I cannot provide that output.");
+}
+
+#[tokio::test]
+async fn streaming_refusal_events_and_terminal_content_are_preserved() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["output"] = json!([{
+        "id": "msg_stream_refusal",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [{"type": "refusal", "refusal": "final refusal"}]
+    }]);
+    let body = format!(
+        concat!(
+            "event: response.refusal.delta\n",
+            "data: {{\"type\":\"response.refusal.delta\",\"sequence_number\":1,",
+            "\"item_id\":\"msg_stream_refusal\",\"output_index\":0,",
+            "\"content_index\":0,\"delta\":\"partial\"}}\n\n",
+            "event: response.refusal.done\n",
+            "data: {{\"type\":\"response.refusal.done\",\"sequence_number\":2,",
+            "\"item_id\":\"msg_stream_refusal\",\"output_index\":0,",
+            "\"content_index\":0,\"refusal\":\"final refusal\"}}\n\n",
+            "event: response.completed\n",
+            "data: {{\"type\":\"response.completed\",\"sequence_number\":3,",
+            "\"response\":{}}}\n\n"
+        ),
+        response
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("x-request-id", "req_stream_refusal")
+                .set_body_raw(body, "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let result = provider(&server)
+        .create_response(&prepared(true))
+        .await
+        .expect("stream refusal terminal");
+    let refusals = result.receipt().observed_refusals();
+
+    assert_eq!(refusals.len(), 3);
+    assert_eq!(refusals[0].event_type(), "response.refusal.delta");
+    assert_eq!(refusals[0].sequence_number(), Some(1));
+    assert_eq!(refusals[1].event_type(), "response.refusal.done");
+    assert_eq!(refusals[2].event_type(), "message.refusal");
+}
+
+#[tokio::test]
+async fn incomplete_and_failed_terminals_preserve_typed_provider_details() {
+    let incomplete_server = MockServer::start().await;
+    let mut incomplete = completed_response_value();
+    incomplete["status"] = json!("incomplete");
+    incomplete["incomplete_details"] = json!({"reason": "max_output_tokens"});
+    mount_json_value(
+        &incomplete_server,
+        "/v1/responses",
+        &incomplete,
+        "req_incomplete",
+    )
+    .await;
+    let incomplete_result = provider(&incomplete_server)
+        .create_response(&prepared(false))
+        .await
+        .expect("incomplete is a known terminal");
+    assert_eq!(
+        incomplete_result.receipt().terminal_status(),
+        ResponsesTerminalStatus::Incomplete
+    );
+    assert_eq!(
+        incomplete_result.receipt().incomplete_reason(),
+        Some("max_output_tokens")
+    );
+
+    let failed_server = MockServer::start().await;
+    let mut failed = completed_response_value();
+    failed["status"] = json!("failed");
+    failed["output"] = json!([]);
+    failed["error"] = json!({
+        "code": "model_error",
+        "message": "generation failed"
+    });
+    mount_json_value(&failed_server, "/v1/responses", &failed, "req_failed").await;
+    let failed_result = provider(&failed_server)
+        .create_response(&prepared(false))
+        .await
+        .expect("failed is a known provider terminal");
+    assert_eq!(
+        failed_result.receipt().terminal_status(),
+        ResponsesTerminalStatus::Failed
+    );
+    let error = failed_result
+        .receipt()
+        .provider_error()
+        .expect("provider error");
+    assert_eq!(error.code(), Some("model_error"));
+    assert_eq!(error.message(), "generation failed");
+}
+
+#[tokio::test]
+async fn contradictory_terminal_variants_fail_with_known_accounting() {
+    for (status, error, incomplete_details) in [
+        ("incomplete", Value::Null, Value::Null),
+        ("failed", Value::Null, Value::Null),
+        (
+            "failed",
+            json!({"code": "model_error", "message": "failed"}),
+            json!({"reason": "max_output_tokens"}),
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let mut response = completed_response_value();
+        response["status"] = json!(status);
+        response["error"] = error;
+        response["incomplete_details"] = incomplete_details;
+        mount_json_value(&server, "/v1/responses", &response, "req_bad_state").await;
+
+        let error = provider(&server)
+            .create_response(&prepared(false))
+            .await
+            .expect_err("contradictory terminal must fail");
+
+        assert_eq!(error.attempt().state(), AttemptState::TerminalObserved);
+        assert_eq!(
+            error
+                .attempt()
+                .terminal_usage()
+                .expect("known usage")
+                .provenance,
+            UsageProvenance::ReportedValid
+        );
+    }
+}
+
+#[tokio::test]
+async fn malformed_tool_output_preserves_tool_and_accounting_evidence() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["output"] = json!([{
+        "id": "fc_malformed",
+        "type": "function_call",
+        "call_id": "call_malformed",
+        "name": 42
+    }]);
+    mount_json_value(&server, "/v1/responses", &response, "req_bad_tool").await;
+
+    let error = provider(&server)
+        .create_response(&prepared(false))
+        .await
+        .expect_err("malformed tool output must fail");
+
+    assert_eq!(error.attempt().state(), AttemptState::TerminalObserved);
+    assert_eq!(error.attempt().observed_tool_events().len(), 1);
+    assert_eq!(
+        error.attempt().observed_tool_events()[0].call_id(),
+        Some("call_malformed")
+    );
+    assert_eq!(
+        error
+            .attempt()
+            .terminal_usage()
+            .expect("known usage")
+            .provenance,
+        UsageProvenance::ReportedValid
+    );
+}
+
+#[tokio::test]
+async fn refusal_before_malformed_output_is_preserved_in_failure_receipt() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["output"] = json!([
+        {
+            "id": "msg_refusal_before_bad_item",
+            "type": "message",
+            "content": [{"type": "refusal", "refusal": "blocked"}]
+        },
+        42
+    ]);
+    mount_json_value(
+        &server,
+        "/v1/responses",
+        &response,
+        "req_refusal_bad_output",
+    )
+    .await;
+
+    let error = provider(&server)
+        .create_response(&prepared(false))
+        .await
+        .expect_err("malformed sibling output must fail");
+
+    assert_eq!(error.attempt().state(), AttemptState::TerminalObserved);
+    assert_eq!(error.attempt().observed_refusals().len(), 1);
+    assert_eq!(error.attempt().observed_refusals()[0].text(), "blocked");
+}
+
+#[tokio::test]
+async fn structured_non_success_errors_are_preserved_for_count_and_create() {
+    let server = MockServer::start().await;
+    let body = json!({
+        "error": {
+            "message": "invalid input",
+            "type": "invalid_request_error",
+            "param": "input",
+            "code": "invalid_value"
+        }
+    });
+    for endpoint in ["/v1/responses", "/v1/responses/input_tokens"] {
+        Mock::given(method("POST"))
+            .and(path(endpoint))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .append_header("x-request-id", "req_structured_error")
+                    .set_body_json(&body),
+            )
+            .mount(&server)
+            .await;
+    }
+
+    let call = prepared(false);
+    let create_error = provider(&server)
+        .create_response(&call)
+        .await
+        .expect_err("create must reject HTTP 400");
+    let count_error = provider(&server)
+        .count_response_input_tokens(&call)
+        .await
+        .expect_err("count must reject HTTP 400");
+    for error in [create_error, count_error] {
+        assert_eq!(error.attempt().state(), AttemptState::HttpRejected);
+        let provider_error = error.attempt().provider_error().expect("structured error");
+        assert_eq!(provider_error.code(), Some("invalid_value"));
+        assert_eq!(provider_error.message(), "invalid input");
+        assert_eq!(provider_error.error_type(), Some("invalid_request_error"));
+        assert_eq!(provider_error.param(), Some("input"));
+    }
+}
+
+#[tokio::test]
+async fn stream_error_event_preserves_structured_provider_error() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "event: error\n",
+        "data: {\"type\":\"error\",\"sequence_number\":1,",
+        "\"code\":\"stream_failed\",\"message\":\"provider failed\",",
+        "\"param\":\"input\"}\n\n"
+    );
+    mount_sse(&server, body, "req_stream_error").await;
+
+    let error = provider(&server)
+        .create_response(&prepared(true))
+        .await
+        .expect_err("stream error event must fail");
+
+    assert_eq!(error.attempt().state(), AttemptState::ProviderErrorObserved);
+    let provider_error = error.attempt().provider_error().expect("stream error");
+    assert_eq!(provider_error.code(), Some("stream_failed"));
+    assert_eq!(provider_error.message(), "provider failed");
+    assert_eq!(provider_error.param(), Some("input"));
+}
+
+#[tokio::test]
+async fn stream_failed_terminal_preserves_provider_error_and_usage() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["status"] = json!("failed");
+    response["output"] = json!([]);
+    response["error"] = json!({
+        "code": "stream_model_error",
+        "message": "stream generation failed"
+    });
+    let body = format!(
+        "event: response.failed\ndata: {}\n\n",
+        json!({
+            "type": "response.failed",
+            "sequence_number": 9,
+            "response": response,
+        })
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("x-request-id", "req_stream_failed")
+                .set_body_raw(body, "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let result = provider(&server)
+        .create_response(&prepared(true))
+        .await
+        .expect("failed stream is a known provider terminal");
+
+    assert_eq!(
+        result.receipt().terminal_status(),
+        ResponsesTerminalStatus::Failed
+    );
+    assert_eq!(result.receipt().terminal_sequence_number(), Some(9));
+    assert_eq!(
+        result.receipt().usage().provenance,
+        UsageProvenance::ReportedValid
+    );
+    let error = result.receipt().provider_error().expect("provider error");
+    assert_eq!(error.code(), Some("stream_model_error"));
+    assert_eq!(error.message(), "stream generation failed");
+}
+
+#[tokio::test]
+async fn stream_event_status_mismatch_fails_with_first_terminal_evidence() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["status"] = json!("failed");
+    response["output"] = json!([]);
+    response["error"] = json!({
+        "code": "mismatched_terminal",
+        "message": "event type contradicts status"
+    });
+    let body = format!(
+        "event: response.completed\ndata: {}\n\n",
+        json!({
+            "type": "response.completed",
+            "sequence_number": 11,
+            "response": response,
+        })
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("x-request-id", "req_stream_mismatch")
+                .set_body_raw(body, "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let error = provider(&server)
+        .create_response(&prepared(true))
+        .await
+        .expect_err("terminal event type and response status must agree");
+
+    assert_eq!(error.attempt().state(), AttemptState::TerminalObserved);
+    assert_eq!(
+        error.attempt().terminal_status(),
+        Some(ResponsesTerminalStatus::Failed)
+    );
+    assert_eq!(
+        error
+            .attempt()
+            .provider_error()
+            .expect("provider error")
+            .code(),
+        Some("mismatched_terminal")
+    );
+    assert_eq!(
+        error
+            .attempt()
+            .terminal_usage()
+            .expect("known usage")
+            .provenance,
+        UsageProvenance::ReportedValid
+    );
+}
+
+#[tokio::test]
+async fn stream_missing_request_id_preserves_terminal_accounting() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            include_str!("fixtures/openai/responses_stream_completed.txt"),
+            "text/event-stream",
+        ))
+        .mount(&server)
+        .await;
+
+    let error = provider(&server)
+        .create_response(&prepared(true))
+        .await
+        .expect_err("stream receipt requires x-request-id");
+
+    assert_eq!(error.attempt().state(), AttemptState::TerminalObserved);
+    assert_eq!(error.attempt().response_id(), Some("resp_stream_completed"));
+    assert_eq!(
+        error
+            .attempt()
+            .terminal_usage()
+            .expect("known usage")
             .provenance,
         UsageProvenance::ReportedValid
     );

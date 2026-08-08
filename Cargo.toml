@@ -11,13 +11,18 @@ futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_jcs = "0.2"
 sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing = "0.1"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+bytes = "1"
+h2 = "0.4"
+http = "1"
+reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
 wiremock = "0.6"
 
 [features]

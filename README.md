@@ -94,7 +94,11 @@ async fn main() -> anyhow::Result<()> {
 The Responses API is intentionally provider-native rather than part of the
 generic `Provider` trait. The same prepared projection produces both the
 `/v1/responses/input_tokens` body and the `/v1/responses` body; response-only
-controls have a separate digest.
+controls and the strict transport policy have separate digests. All three
+digests use RFC 8785 JCS (`rfc8785-jcs/v1`) before SHA-256. `truncation` is part
+of the token-relevant projection because it can change which input reaches the
+model; `max_output_tokens`, streaming, storage/background behavior, service
+tier, and `include` remain response-only controls.
 
 ```rust
 use llm_adapter::openai::{
@@ -121,13 +125,23 @@ let response = provider.create_response(&prepared).await?;
 assert_eq!(count.projection_digest(), response.receipt().projection_digest());
 ```
 
-The transport performs exactly one HTTP attempt. Streaming stops at the first
-terminal event, even if the connection remains open. Receipts preserve request
-ID, configured provider endpoint, requested and returned model identities,
-response ID, usage provenance, and observed tool activity. A configured base
-URL is an identity binding, not remote-provider attestation. Priced callers
-must still require `Usage::validate_report()` and enforce their own trusted
-pricing/admission policy.
+Count and create use a dedicated strict client with redirects disabled and
+`reqwest::retry::never()`, so the adapter performs exactly one HTTP attempt.
+This policy is versioned and digest-bound to both prepared calls and receipts;
+the legacy Chat/Embedding client remains separate. Streaming stops at the first
+terminal event, even if the connection remains open.
+
+The parser captures the terminal envelope before validating output. A malformed
+output, tool payload, refusal payload, or contradictory status therefore fails
+without discarding already-known response ID, returned model, usage, tool or
+refusal observations. Receipts also preserve provider error details,
+`incomplete_details.reason`, actual returned service tier, and returned
+reasoning fields when supplied. Because every request explicitly sets a service
+tier, a terminal response that omits the actual tier fails with its known
+accounting evidence retained. A configured base URL and returned fields are
+identity evidence from the configured transport, not independent remote-provider
+attestation. Priced callers must still require `Usage::validate_report()` and
+enforce their own trusted pricing/admission policy.
 
 ### DeepSeek with one factory call
 
