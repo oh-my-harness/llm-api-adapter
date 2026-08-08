@@ -95,6 +95,23 @@ async fn mount_sse(server: &MockServer, body: &'static str, request_id: &str) {
         .await;
 }
 
+fn completed_response_value() -> Value {
+    serde_json::from_str(include_str!("fixtures/openai/responses_completed.json"))
+        .expect("valid completed response fixture")
+}
+
+async fn mount_json_value(server: &MockServer, path_value: &str, body: &Value, request_id: &str) {
+    Mock::given(method("POST"))
+        .and(path(path_value))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("x-request-id", request_id)
+                .set_body_json(body),
+        )
+        .mount(server)
+        .await;
+}
+
 #[tokio::test]
 async fn count_and_response_are_derived_from_one_immutable_projection() {
     let server = MockServer::start().await;
@@ -477,4 +494,209 @@ async fn timeout_is_indeterminate_and_never_retried() {
 
     assert_eq!(error.attempt().state(), AttemptState::OutcomeUnknown);
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn response_create_never_follows_redirects() {
+    for status in [301, 302, 307, 308] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/responses"))
+            .respond_with(
+                ResponseTemplate::new(status).append_header("location", "/redirected-responses"),
+            )
+            .mount(&server)
+            .await;
+        mount_json(
+            &server,
+            "/redirected-responses",
+            include_str!("fixtures/openai/responses_completed.json"),
+            "req_redirect_target",
+        )
+        .await;
+
+        let error = provider(&server)
+            .create_response(&prepared(false))
+            .await
+            .expect_err("Responses transport must reject redirects");
+
+        assert_eq!(error.attempt().state(), AttemptState::HttpRejected);
+        assert_eq!(error.attempt().status_code(), Some(status));
+        let requests = server.received_requests().await.expect("request log");
+        assert_eq!(
+            requests.len(),
+            1,
+            "status {status} caused an implicit second HTTP attempt"
+        );
+        assert_eq!(requests[0].url.path(), "/v1/responses");
+    }
+}
+
+#[tokio::test]
+async fn response_create_never_follows_redirect_chains() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(307).append_header("location", "/redirect-middle"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/redirect-middle"))
+        .respond_with(ResponseTemplate::new(308).append_header("location", "/redirect-terminal"))
+        .mount(&server)
+        .await;
+    mount_json(
+        &server,
+        "/redirect-terminal",
+        include_str!("fixtures/openai/responses_completed.json"),
+        "req_redirect_chain",
+    )
+    .await;
+
+    provider(&server)
+        .create_response(&prepared(false))
+        .await
+        .expect_err("Responses transport must reject the first redirect");
+
+    let requests = server.received_requests().await.expect("request log");
+    assert_eq!(requests.len(), 1, "redirect chain must not be traversed");
+    assert_eq!(requests[0].url.path(), "/v1/responses");
+}
+
+#[tokio::test]
+async fn input_token_count_never_follows_redirects() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses/input_tokens"))
+        .respond_with(ResponseTemplate::new(307).append_header("location", "/redirected-count"))
+        .mount(&server)
+        .await;
+    mount_json(
+        &server,
+        "/redirected-count",
+        include_str!("fixtures/openai/responses_input_tokens.json"),
+        "req_redirected_count",
+    )
+    .await;
+
+    let error = provider(&server)
+        .count_response_input_tokens(&prepared(false))
+        .await
+        .expect_err("count transport must reject redirects");
+
+    assert_eq!(error.attempt().state(), AttemptState::HttpRejected);
+    assert_eq!(error.attempt().status_code(), Some(307));
+    let requests = server.received_requests().await.expect("request log");
+    assert_eq!(requests.len(), 1, "count endpoint was retried by redirect");
+    assert_eq!(requests[0].url.path(), "/v1/responses/input_tokens");
+}
+
+#[tokio::test]
+async fn malformed_non_stream_output_preserves_terminal_accounting() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["output"] = json!({"not": "an array"});
+    mount_json_value(&server, "/v1/responses", &response, "req_bad_output").await;
+
+    let error = provider(&server)
+        .create_response(&prepared(false))
+        .await
+        .expect_err("malformed terminal output must fail");
+
+    assert_eq!(error.attempt().state(), AttemptState::TerminalObserved);
+    assert_eq!(
+        error.attempt().response_id(),
+        Some("resp_fixture_completed")
+    );
+    assert_eq!(
+        error.attempt().returned_model(),
+        Some("gpt-5.6-terra-2026-07-15")
+    );
+    assert_eq!(
+        error
+            .attempt()
+            .terminal_usage()
+            .expect("known terminal usage")
+            .provenance,
+        UsageProvenance::ReportedValid
+    );
+}
+
+#[tokio::test]
+async fn malformed_stream_output_preserves_terminal_accounting() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["output"] = json!({"not": "an array"});
+    let body = format!(
+        "event: response.completed\ndata: {}\n\n",
+        json!({
+            "type": "response.completed",
+            "sequence_number": 7,
+            "response": response,
+        })
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .append_header("x-request-id", "req_bad_stream_output")
+                .set_body_raw(body, "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+
+    let error = provider(&server)
+        .create_response(&prepared(true))
+        .await
+        .expect_err("malformed stream terminal output must fail");
+
+    assert_eq!(error.attempt().state(), AttemptState::TerminalObserved);
+    assert_eq!(
+        error.attempt().response_id(),
+        Some("resp_fixture_completed")
+    );
+    assert_eq!(
+        error
+            .attempt()
+            .terminal_usage()
+            .expect("known terminal usage")
+            .provenance,
+        UsageProvenance::ReportedValid
+    );
+}
+
+#[tokio::test]
+async fn completed_terminal_with_provider_error_is_rejected() {
+    let server = MockServer::start().await;
+    let mut response = completed_response_value();
+    response["error"] = json!({
+        "code": "provider_internal_error",
+        "message": "the response failed after completion"
+    });
+    mount_json_value(
+        &server,
+        "/v1/responses",
+        &response,
+        "req_contradictory_terminal",
+    )
+    .await;
+
+    let error = provider(&server)
+        .create_response(&prepared(false))
+        .await
+        .expect_err("completed response cannot also contain a provider error");
+
+    assert_eq!(error.attempt().state(), AttemptState::TerminalObserved);
+    assert_eq!(
+        error.attempt().response_id(),
+        Some("resp_fixture_completed")
+    );
+    assert_eq!(
+        error
+            .attempt()
+            .terminal_usage()
+            .expect("known terminal usage")
+            .provenance,
+        UsageProvenance::ReportedValid
+    );
 }
