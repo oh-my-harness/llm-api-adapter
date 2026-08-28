@@ -1,15 +1,9 @@
 use super::content::{ResponseContent, ToolInvocation};
 
-pub const BILLING_USAGE_PROFILE_ID: &str = "llm-harness-billing-usage";
+pub const BILLING_USAGE_PROFILE_ID: &str = "llm-adapter-billing-usage";
 pub const BILLING_USAGE_PROFILE_VERSION: &str = "1";
-pub const BILLING_USAGE_PROFILE_CONTRACT: &str = "input_tokens=gross_input;cache_read_tokens=input_subset;cache_creation_input_tokens=input_subset;cache_read_and_creation=disjoint;output_tokens=gross_output;reasoning_tokens=output_subset;uncached_input=input_tokens-cache_read_tokens-cache_creation_input_tokens";
-pub const BILLING_USAGE_PROFILE_DIGEST: &str =
-    "sha256:6afb4df926d32f3917ab28fb7ea30af87b20d7b81391d800c076f637c7eb73fb";
-pub const USAGE_REPORT_PROFILE_ID: &str = "llm-harness-usage-report";
+pub const USAGE_REPORT_PROFILE_ID: &str = "llm-adapter-usage-report";
 pub const USAGE_REPORT_PROFILE_VERSION: &str = "2";
-pub const USAGE_REPORT_PROFILE_CONTRACT: &str = "provenance=provider_payload;states=reported_valid,missing,reported_invalid;zero_tokens_do_not_imply_missing;reported_valid_requires_billing_invariants;parsed_usage_normalization_failure=reported_invalid;terminal=first_message_stop";
-pub const USAGE_REPORT_PROFILE_DIGEST: &str =
-    "sha256:9d9e1d63b51fb44ef06383f1b7e92729404b7729357c25aef2d4d15bfdc288c5";
 
 /// Why the model stopped generating.
 ///
@@ -159,25 +153,6 @@ impl BillingUsageProfileError {
 #[cfg(test)]
 mod billing_profile_tests {
     use super::*;
-    use sha2::{Digest, Sha256};
-
-    #[test]
-    fn billing_profile_digest_matches_the_contract_text() {
-        let digest = format!(
-            "sha256:{:x}",
-            Sha256::digest(BILLING_USAGE_PROFILE_CONTRACT.as_bytes())
-        );
-        assert_eq!(digest, BILLING_USAGE_PROFILE_DIGEST);
-    }
-
-    #[test]
-    fn usage_report_profile_digest_matches_the_contract_text() {
-        let digest = format!(
-            "sha256:{:x}",
-            Sha256::digest(USAGE_REPORT_PROFILE_CONTRACT.as_bytes())
-        );
-        assert_eq!(digest, USAGE_REPORT_PROFILE_DIGEST);
-    }
 
     #[test]
     fn missing_and_reported_zero_have_distinct_provenance() {

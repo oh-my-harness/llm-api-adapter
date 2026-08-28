@@ -677,8 +677,7 @@ examples/
 ## Billing usage contract
 
 Canonical `Usage` follows the versioned profile exposed by
-`BILLING_USAGE_PROFILE_ID`, `BILLING_USAGE_PROFILE_VERSION`, and
-`BILLING_USAGE_PROFILE_DIGEST`:
+`BILLING_USAGE_PROFILE_ID` and `BILLING_USAGE_PROFILE_VERSION`:
 
 - `input_tokens` is gross input, including cache reads and cache writes.
 - `cached_input_tokens` and `cache_creation_input_tokens` are disjoint input
@@ -689,8 +688,7 @@ Canonical `Usage` follows the versioned profile exposed by
 - `Usage::validate_billing_profile()` rejects contradictory provider usage.
 
 Usage-report completeness is a separate versioned contract exposed by
-`USAGE_REPORT_PROFILE_ID`, `USAGE_REPORT_PROFILE_VERSION`, and
-`USAGE_REPORT_PROFILE_DIGEST`. `Usage.provenance` distinguishes:
+`USAGE_REPORT_PROFILE_ID` and `USAGE_REPORT_PROFILE_VERSION`. `Usage.provenance` distinguishes:
 
 - `ReportedValid`: the provider supplied usage and canonical invariants hold;
 - `Missing`: the response completed without provider usage;
