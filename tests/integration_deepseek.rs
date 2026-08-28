@@ -341,9 +341,9 @@ async fn integration_image_input_returns_error() {
     let req = ChatRequest::builder(model, 256)
         .message(Message::User(vec![
             RequestContent::Text("What is in this image?".into()),
-            RequestContent::Image(
-                ImageSource::Url("https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg".into())
-            ),
+            RequestContent::Image(ImageSource::Url {
+                url: "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg".into(),
+            }),
         ]))
         .build();
 

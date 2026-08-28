@@ -130,6 +130,8 @@ impl AnthropicProvider {
                 reasoning: true,
                 json_schema: false,
                 embeddings: false,
+                documents: true,
+                documents_inline: true,
             },
             connect_timeout: None,
             read_timeout: None,
@@ -198,6 +200,7 @@ impl AnthropicProvider {
         &self,
         req: &AnthropicRequest,
     ) -> Result<AnthropicNativeResponse, LlmError> {
+        crate::provider::check_documents_capability(&req.base, &self.capabilities)?;
         let wire_req = convert::to_anthropic(&req.base, Some(&req.ext), false)?;
         let response = self.send(&wire_req, false).await?;
         let wire_resp = response.json::<schema::AnthropicResponse>().await?;
@@ -216,6 +219,7 @@ impl AnthropicProvider {
         &self,
         req: &AnthropicRequest,
     ) -> Result<StreamHandle, LlmError> {
+        crate::provider::check_documents_capability(&req.base, &self.capabilities)?;
         let wire_req = convert::to_anthropic(&req.base, Some(&req.ext), true)?;
         let start = std::time::Instant::now();
         let response = self.send(&wire_req, true).await?;

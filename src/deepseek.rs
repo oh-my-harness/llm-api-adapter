@@ -9,7 +9,8 @@ const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 /// Capabilities: reasoning ✓, json_schema ✗ (DeepSeek does not support
 /// `response_format: json_schema` — use `json_object` or strict tool use),
 /// images ✗ (DeepSeek V3/V4 do not accept image input; see integration test
-/// `integration_image_input_returns_error` for verification.)
+/// `integration_image_input_returns_error` for verification), documents ✗
+/// (no document input).
 ///
 /// # Example
 ///
@@ -28,6 +29,8 @@ pub fn client(api_key: impl Into<String>) -> OpenAIProvider {
             reasoning: true,
             json_schema: false,
             embeddings: false,
+            documents: false,
+            documents_inline: false,
         })
         .build()
 }

@@ -30,12 +30,20 @@
 
 ## 支持的 provider
 
-| Provider | Universal 路径 | Native 扩展 | 流式 | Tool calling | Reasoning |
-|---|---|---|---|---|---|
-| OpenAI Chat Completions | ✅ | `OpenAIExt`：seed、penalties、`reasoning_effort`、`extra_body` | ✅ | ✅ | `ThinkingLevel` → `reasoning_effort`（o 系列 / GPT-5） |
-| DeepSeek（`api.deepseek.com`） | ✅（工厂函数 `deepseek::client`） | `OpenAIExt`（如 `extra_body: {"thinking": {"type": "disabled"}}`） | ✅ | ✅ | `ThinkingLevel` → `thinking` 开关 + 顶层 `reasoning_effort`；`reasoning_content` → `ResponseContent::Reasoning` |
-| Anthropic Messages | ✅ | `AnthropicExt`：top_k、thinking、metadata、cache_hints | ✅ | ✅ | `ThinkingLevel` → 扩展思考（4.6 budget_tokens / 4.7+ adaptive） |
-| 任意 OpenAI 兼容网关 | ✅，通过 `base_url` + `chat_path` 覆盖 | `extra_body` 注入非标字段 | ✅ | ✅ | 取决于 endpoint |
+| Provider | Universal 路径 | Native 扩展 | 流式 | Tool calling | Reasoning | 文档输入 |
+|---|---|---|---|---|---|---|
+| OpenAI Chat Completions | ✅ | `OpenAIExt`：seed、penalties、`reasoning_effort`、`extra_body` | ✅ | ✅ | `ThinkingLevel` → `reasoning_effort`（o 系列 / GPT-5） | ✗ |
+| DeepSeek（`api.deepseek.com`） | ✅（工厂函数 `deepseek::client`） | `OpenAIExt`（如 `extra_body: {"thinking": {"type": "disabled"}}`） | ✅ | ✅ | `ThinkingLevel` → `thinking` 开关 + 顶层 `reasoning_effort`；`reasoning_content` → `ResponseContent::Reasoning` | ✗ |
+| Anthropic Messages | ✅ | `AnthropicExt`：top_k、thinking、metadata、cache_hints | ✅ | ✅ | `ThinkingLevel` → 扩展思考（4.6 budget_tokens / 4.7+ adaptive） | ✅（URL + base64） |
+| 任意 OpenAI 兼容网关 | ✅，通过 `base_url` + `chat_path` 覆盖 | `extra_body` 注入非标字段 | ✅ | ✅ | 取决于 endpoint | 仅 URL |
+
+文档输入在 OpenAI 系 builder 上默认**关闭**（`documents: false`）：标准 Chat
+Completions 没有文档 part，携带 `RequestContent::Document` 的请求会在构造期
+直接报错，而不是等到服务端。两种显式开启方式：智谱系网关（如 GLM 的
+`file_url` part，仅 URL）用 `OpenAIProvider::builder(key).documents(true)`；
+OpenAI 生态式端点（OpenAI 官方、OpenRouter、DeepInfra——标准的
+`{"type":"file","file":{"file_data":…}}` part）用 `.documents_inline(true)`，
+同时接受内联 base64 文档和 URL 文档，并蕴含 `documents(true)`。
 
 已经验证可通过路径覆盖支持的网关：GitHub Models（路径为 `/chat/completions`，无 `/v1`）、OpenRouter（路径为 `/api/v1/...`）、Groq（路径为 `/openai/v1/...`）。库本身不为这些网关做任何特殊处理，它们能工作纯粹是因为协议就是 OpenAI Chat Completions。
 
@@ -404,7 +412,7 @@ pub enum Message {
     Tool { invocation_id: String, content: Vec<RequestContent>, is_error: bool },
 }
 
-pub enum RequestContent  { Text(String), Image(ImageSource) }
+pub enum RequestContent  { Text(String), Image(ImageSource), Document(DocumentSource) }
 pub enum ResponseContent { Text(String), ToolInvocation(ToolInvocation), Reasoning { text: String, signature: Option<String> } }
 pub enum StopReason      { EndTurn, MaxTokens, StopSequence, ToolUse, ContentFilter, Other(String) }
 ```

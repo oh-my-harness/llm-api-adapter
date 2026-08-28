@@ -16,7 +16,7 @@
 mod common;
 
 use futures::StreamExt;
-use llm_adapter::{Provider, openai::OpenAIProvider, types::*};
+use llm_adapter::{LlmError, Provider, deepseek, openai::OpenAIProvider, types::*};
 
 /// Returns `None` when the test should be skipped.
 fn provider() -> Option<(OpenAIProvider, String)> {
@@ -249,7 +249,8 @@ async fn integration_response_format_json_object() {
         );
         return;
     }
-    let req = ChatRequest::builder(model, 512)
+    // Thinking models spend reasoning tokens from the same budget first.
+    let req = ChatRequest::builder(model, 4096)
         .message(Message::User(vec![RequestContent::Text(
             "Return a JSON object with a single key \"greeting\" \
              whose value is a short greeting string."
@@ -300,7 +301,9 @@ async fn integration_response_format_json_schema() {
         "required": ["title", "year", "author"],
         "additionalProperties": false
     });
-    let req = ChatRequest::builder(model, 512)
+    // Thinking models (e.g. GLM-5.3-Flash behind gateways) spend reasoning
+    // tokens from the same budget before emitting content — 512 starves them.
+    let req = ChatRequest::builder(model, 4096)
         .message(Message::User(vec![RequestContent::Text(
             "Return information about the novel '1984' by George Orwell.".into(),
         )]))
@@ -433,4 +436,33 @@ async fn integration_reasoning_stream() {
     let handle = prov.chat_stream(&req).await.expect("stream failed");
     let resp = handle.collect().await.expect("collect failed");
     assert!(!resp.text().is_empty());
+}
+
+#[tokio::test]
+async fn document_input_without_capability_fails_before_http() {
+    // deepseek::client has documents: false. Any Document content must fail
+    // at request-construction time without hitting the network.
+    // No real API key needed: this exercises pre-dispatch validation only.
+    let p = deepseek::client("test-key");
+    let req = ChatRequest::builder("deepseek-v4-flash", 1024)
+        .message(Message::User(vec![RequestContent::Document(
+            DocumentSource::Url {
+                url: "https://example.com/x.pdf".into(),
+            },
+        )]))
+        .build();
+    let err = p.chat(&req).await.unwrap_err();
+    assert!(
+        matches!(err, LlmError::InvalidRequest(_)),
+        "expected InvalidRequest, got {err:?}"
+    );
+    // Must name the capability so callers can distinguish this from the
+    // URL-only source restriction on compatible gateways (Task 2 error).
+    let LlmError::InvalidRequest(msg) = err else {
+        unreachable!("checked above");
+    };
+    assert!(
+        msg.contains("documents capability disabled"),
+        "capability error must name 'documents capability disabled'; got: {msg}"
+    );
 }

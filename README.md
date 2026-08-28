@@ -39,12 +39,22 @@ To keep the surface area honest, this library deliberately does **not** do:
 
 ## Supported providers
 
-| Provider | Universal path | Native extensions | Streaming | Tool calls | Reasoning | Structured output |
-|---|---|---|---|---|---|---|
-| OpenAI Chat Completions | ✅ | `OpenAIExt`: seed, penalties, `reasoning_effort`, `response_format`, `extra_body` | ✅ | ✅ | `ThinkingLevel` → `reasoning_effort` (o-series / GPT-5) | ✅ (json_object, json_schema) |
-| DeepSeek (`api.deepseek.com`) | ✅ (factory `deepseek::client`) | `OpenAIExt` (e.g. `extra_body: {"thinking": {"type": "disabled"}}`) | ✅ | ✅ | `ThinkingLevel` → `thinking` toggle + top-level `reasoning_effort`; `reasoning_content` → `ResponseContent::Reasoning` | via `extra_body` |
-| Anthropic Messages | ✅ | `AnthropicExt`: top_k, thinking, metadata, cache_hints, `structured_output` | ✅ | ✅ | `ThinkingLevel` → extended thinking (budget_tokens 4.6 / adaptive 4.7+) | ✅ (Strict Tool Use) |
-| Any OpenAI-compatible gateway | ✅ via `base_url` + `chat_path` overrides | `extra_body` for non-standard fields | ✅ | ✅ | depends on endpoint | via `extra_body` |
+| Provider | Universal path | Native extensions | Streaming | Tool calls | Reasoning | Structured output | Document input |
+|---|---|---|---|---|---|---|---|
+| OpenAI Chat Completions | ✅ | `OpenAIExt`: seed, penalties, `reasoning_effort`, `response_format`, `extra_body` | ✅ | ✅ | `ThinkingLevel` → `reasoning_effort` (o-series / GPT-5) | ✅ (json_object, json_schema) | ✗ |
+| DeepSeek (`api.deepseek.com`) | ✅ (factory `deepseek::client`) | `OpenAIExt` (e.g. `extra_body: {"thinking": {"type": "disabled"}}`) | ✅ | ✅ | `ThinkingLevel` → `thinking` toggle + top-level `reasoning_effort`; `reasoning_content` → `ResponseContent::Reasoning` | via `extra_body` | ✗ |
+| Anthropic Messages | ✅ | `AnthropicExt`: top_k, thinking, metadata, cache_hints, `structured_output` | ✅ | ✅ | `ThinkingLevel` → extended thinking (budget_tokens 4.6 / adaptive 4.7+) | ✅ (Strict Tool Use) | ✅ (URL + base64) |
+| Any OpenAI-compatible gateway | ✅ via `base_url` + `chat_path` overrides | `extra_body` for non-standard fields | ✅ | ✅ | depends on endpoint | via `extra_body` | URL only |
+
+Document input defaults to **disabled** on OpenAI-family builders
+(`documents: false`): plain Chat Completions has no document part, and requests
+carrying `RequestContent::Document` fail at construction time instead of at the
+server. Two opt-in shapes exist. Zhipu-style gateways (e.g. GLM, `file_url`
+part, URL only) use `OpenAIProvider::builder(key).documents(true)`. Endpoints
+in the OpenAI-ecosystem mold (OpenAI official, OpenRouter, DeepInfra — the
+standard `{"type":"file","file":{"file_data":…}}` part) use
+`.documents_inline(true)`, which accepts both inline base64 documents and URL
+documents and implies `documents(true)`.
 
 Tested compatible gateways for the path-override path: GitHub Models
 (`/chat/completions` no `/v1`), OpenRouter (`/api/v1/...`), Groq
@@ -474,6 +484,7 @@ you can compare how providers behave on identical input:
 | Tools | stops with `ToolUse` | stops with `ToolUse` | stops with `ToolUse` |
 | Reasoning | via `reasoning_effort` → `ResponseContent::Reasoning` | Extended Thinking → `ResponseContent::Reasoning { signature }` | Always-on (V4 default) → `ResponseContent::Reasoning` |
 | Image input | supported | supported | not supported |
+| Document input (PDF) | ✗ (`documents capability disabled` pre-dispatch) | ✅ URL + base64 | ✗ (`documents capability disabled` pre-dispatch) |
 | Multi-turn thinking | N/A | requires `signature` round-trip via `AnthropicNativeResponse::into_message()` | N/A |
 
 ## Core concepts
@@ -492,7 +503,7 @@ pub enum Message {
     Tool { invocation_id: String, content: Vec<RequestContent>, is_error: bool },
 }
 
-pub enum RequestContent  { Text(String), Image(ImageSource) }
+pub enum RequestContent  { Text(String), Image(ImageSource), Document(DocumentSource) }
 pub enum ResponseContent { Text(String), ToolInvocation(ToolInvocation), Reasoning { text: String, signature: Option<String> } }
 pub enum StopReason      { EndTurn, MaxTokens, StopSequence, ToolUse, ContentFilter, Other(String) }
 ```

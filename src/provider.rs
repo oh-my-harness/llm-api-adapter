@@ -20,6 +20,14 @@ pub struct ProviderCapabilities {
     pub json_schema: bool,
     /// Whether this provider supports embedding requests.
     pub embeddings: bool,
+    /// Whether this provider accepts document content (e.g. PDF) in messages.
+    pub documents: bool,
+    /// Whether this provider accepts **inline** base64 documents (the
+    /// OpenAI-ecosystem `file` part with a data URL — OpenAI official,
+    /// OpenRouter, DeepInfra…). When `false` (Zhipu-style), URL documents go
+    /// out as the gateway's `file_url` part and inline documents are rejected
+    /// at construction time.
+    pub documents_inline: bool,
 }
 
 impl ProviderCapabilities {
@@ -30,6 +38,8 @@ impl ProviderCapabilities {
             reasoning,
             json_schema,
             embeddings: false,
+            documents: false,
+            documents_inline: false,
         }
     }
 
@@ -45,9 +55,13 @@ impl ProviderCapabilities {
             reasoning,
             json_schema,
             embeddings,
+            documents: false,
+            documents_inline: false,
         }
     }
+}
 
+impl ProviderCapabilities {
     /// Returns `true` if this provider accepts image content in user messages.
     pub fn supports_images(&self) -> bool {
         self.images
@@ -68,6 +82,44 @@ impl ProviderCapabilities {
     pub fn supports_embeddings(&self) -> bool {
         self.embeddings
     }
+
+    /// Returns `true` if this provider accepts document content in messages.
+    pub fn supports_documents(&self) -> bool {
+        self.documents
+    }
+}
+
+/// Pre-dispatch guard: reject requests carrying document content when the
+/// provider lacks the `documents` capability.
+///
+/// Called by each provider before wire conversion so the error surfaces at
+/// request-construction time — no network request is issued. The message
+/// names "documents capability disabled" so callers can distinguish this
+/// provider-level restriction from source-level restrictions (e.g. an
+/// OpenAI-compatible gateway that accepts URL documents only).
+pub(crate) fn check_documents_capability(
+    req: &ChatRequest,
+    caps: &ProviderCapabilities,
+) -> Result<(), LlmError> {
+    if caps.supports_documents() {
+        return Ok(());
+    }
+    let has_document = req.messages().iter().any(|m| match m {
+        Message::User(content) | Message::Tool { content, .. } => content
+            .iter()
+            .any(|c| matches!(c, RequestContent::Document(_))),
+        _ => false,
+    });
+    if has_document {
+        return Err(LlmError::InvalidRequest(
+            "this provider does not accept document content (documents capability disabled); \
+             if this model actually supports documents, enable it on the builder with \
+             .documents(true) (URL documents, Zhipu-style file_url) or .documents_inline(true) \
+             (OpenAI-ecosystem file part, implies .documents(true))"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Unified interface for any LLM provider.
@@ -126,4 +178,17 @@ pub trait Provider: Send + Sync {
 pub trait EmbeddingProvider: Send + Sync {
     /// Generate embeddings for the request input batch.
     async fn embed(&self, req: &EmbeddingRequest) -> Result<EmbeddingResponse, LlmError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn documents_capability_defaults_false_and_field_flips_it() {
+        let mut caps = ProviderCapabilities::new(true, true, true);
+        assert!(!caps.supports_documents());
+        caps.documents = true;
+        assert!(caps.supports_documents());
+    }
 }

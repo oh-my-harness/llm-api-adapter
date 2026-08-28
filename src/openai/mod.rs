@@ -110,6 +110,8 @@ impl OpenAIProvider {
                 reasoning: true,
                 json_schema: true,
                 embeddings: true,
+                documents: false,
+                documents_inline: false,
             },
             connect_timeout: None,
             read_timeout: None,
@@ -219,7 +221,14 @@ impl OpenAIProvider {
     /// `reasoning_effort`, `extra_body`, etc. — without sacrificing the
     /// type-safe canonical request shape.
     pub async fn chat_native(&self, req: &OpenAIRequest) -> Result<ChatResponse, LlmError> {
-        let oai_req = convert::to_oai(&req.base, Some(&req.ext), self.thinking_scheme, false)?;
+        crate::provider::check_documents_capability(&req.base, &self.capabilities)?;
+        let oai_req = convert::to_oai(
+            &req.base,
+            Some(&req.ext),
+            self.thinking_scheme,
+            false,
+            self.capabilities.documents_inline,
+        )?;
         let extra_body = self.resolve_extra_body(&req.ext.extra_body, req.base.thinking())?;
         let response = self.send(&oai_req, extra_body.as_deref(), false).await?;
         let oai_resp = response.json::<schema::OaiResponse>().await?;
@@ -231,7 +240,14 @@ impl OpenAIProvider {
     /// Accepts `OpenAIRequest` (a `ChatRequest` paired with `OpenAIExt`) so
     /// callers can use provider-specific streaming extensions.
     pub async fn chat_stream_native(&self, req: &OpenAIRequest) -> Result<StreamHandle, LlmError> {
-        let oai_req = convert::to_oai(&req.base, Some(&req.ext), self.thinking_scheme, true)?;
+        crate::provider::check_documents_capability(&req.base, &self.capabilities)?;
+        let oai_req = convert::to_oai(
+            &req.base,
+            Some(&req.ext),
+            self.thinking_scheme,
+            true,
+            self.capabilities.documents_inline,
+        )?;
         let extra_body = self.resolve_extra_body(&req.ext.extra_body, req.base.thinking())?;
         let start = std::time::Instant::now();
         let response = self.send(&oai_req, extra_body.as_deref(), true).await?;
@@ -395,9 +411,35 @@ impl OpenAIProviderBuilder {
         self
     }
 
-    /// Override provider capabilities (used by factory functions such as `deepseek::client`).
-    pub(crate) fn capabilities(mut self, caps: crate::provider::ProviderCapabilities) -> Self {
+    /// Override provider capabilities wholesale.
+    ///
+    /// Mostly for factory functions such as `deepseek::client`; for a single
+    /// flag prefer the focused setters (e.g. [`Self::documents`]).
+    pub fn capabilities(mut self, caps: crate::provider::ProviderCapabilities) -> Self {
         self.capabilities = caps;
+        self
+    }
+
+    /// Toggle document (PDF) input support.
+    ///
+    /// Default `false`: plain OpenAI Chat Completions has no document input,
+    /// and requests carrying `RequestContent::Document` fail at construction
+    /// time instead of hitting the server. Enable this for OpenAI-compatible
+    /// gateways whose models accept document parts (e.g. GLM `file_url`).
+    pub fn documents(mut self, enabled: bool) -> Self {
+        self.capabilities.documents = enabled;
+        self
+    }
+
+    /// Toggle **inline** base64 document support (the OpenAI-ecosystem `file`
+    /// part with a data URL). Implies `documents(true)`. Use for gateways in
+    /// the OpenAI-ecosystem mold (OpenAI official, OpenRouter, DeepInfra…);
+    /// Zhipu-style `file_url`-only endpoints keep this `false`.
+    pub fn documents_inline(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.capabilities.documents = true;
+        }
+        self.capabilities.documents_inline = enabled;
         self
     }
 

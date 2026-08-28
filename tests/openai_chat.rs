@@ -599,7 +599,9 @@ async fn image_url_appears_in_request_body() {
     let req = ChatRequest::builder("gpt-4o", 512)
         .message(Message::User(vec![
             RequestContent::Text("What is in this image?".into()),
-            RequestContent::Image(ImageSource::Url("https://example.com/cat.png".into())),
+            RequestContent::Image(ImageSource::Url {
+                url: "https://example.com/cat.png".into(),
+            }),
         ]))
         .build();
 
@@ -801,4 +803,46 @@ async fn builder_timeout_methods_chain_without_panic() {
     let _default_provider = OpenAIProvider::builder("test-key")
         .base_url(server.uri())
         .build();
+}
+
+#[tokio::test]
+async fn documents_disabled_by_default_and_gate_opt_in() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_simple.json")).await;
+
+    let doc_req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Document(
+            DocumentSource::Url {
+                url: "https://example.com/doc.pdf".into(),
+            },
+        )]))
+        .build();
+
+    // Default: documents disabled → InvalidRequest before any HTTP call.
+    let default_provider = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .build();
+    assert!(!default_provider.capabilities().supports_documents());
+    let err = default_provider.chat(&doc_req).await.unwrap_err();
+    assert!(
+        matches!(&err, LlmError::InvalidRequest(m) if m.contains("documents capability disabled")),
+        "expected capability error, got {err:?}"
+    );
+    assert!(
+        server.received_requests().await.unwrap().is_empty(),
+        "must fail pre-dispatch"
+    );
+
+    // Opt-in gate: .documents(true) flips the capability and the request goes out.
+    let gateway_provider = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .documents(true)
+        .build();
+    assert!(gateway_provider.capabilities().supports_documents());
+    gateway_provider.chat(&doc_req).await.unwrap();
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "opt-in must dispatch"
+    );
 }

@@ -100,6 +100,18 @@ pub(crate) enum OaiContentPart {
     Text { text: String },
     /// Image URL reference.
     ImageUrl { image_url: OaiImageUrl },
+    /// Document URL reference (Zhipu-style gateways: `file_url`).
+    FileUrl { file_url: OaiImageUrl },
+    /// Inline document (OpenAI-ecosystem `file` part). `file_data` is a data
+    /// URL (`data:<mime>;base64,<payload>`) or a plain https URL.
+    File { file: OaiFileData },
+}
+
+/// Payload of the OpenAI-ecosystem `file` content part.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct OaiFileData {
+    /// Data URL or remote URL of the document.
+    pub file_data: String,
 }
 
 /// Image URL metadata.
