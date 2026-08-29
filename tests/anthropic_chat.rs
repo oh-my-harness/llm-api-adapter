@@ -267,7 +267,7 @@ async fn error_403_maps_to_forbidden() {
         .build();
 
     let err = provider(&server).chat(&req).await.unwrap_err();
-    assert!(matches!(err, LlmError::Forbidden));
+    assert!(matches!(err, LlmError::Provider { code, .. } if code == "forbidden"));
 }
 
 #[tokio::test]

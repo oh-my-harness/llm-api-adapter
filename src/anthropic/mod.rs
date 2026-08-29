@@ -176,7 +176,14 @@ impl AnthropicProvider {
 
             return match status.as_u16() {
                 401 => Err(LlmError::Unauthorized),
-                403 => Err(LlmError::Forbidden),
+                403 => Err(LlmError::Provider {
+                    code: "forbidden".into(),
+                    message: if error_text.is_empty() {
+                        "forbidden".into()
+                    } else {
+                        error_text
+                    },
+                }),
                 404 => Err(LlmError::InvalidRequest(format!("not_found: {error_text}"))),
                 413 => Err(LlmError::InvalidRequest(format!(
                     "request_too_large: {error_text}"

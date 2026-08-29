@@ -154,7 +154,14 @@ impl OpenAIProvider {
 
             return match status.as_u16() {
                 401 => Err(LlmError::Unauthorized),
-                403 => Err(LlmError::Forbidden),
+                403 => Err(LlmError::Provider {
+                    code: "forbidden".into(),
+                    message: if error_text.is_empty() {
+                        "forbidden".into()
+                    } else {
+                        error_text
+                    },
+                }),
                 402 => {
                     // DeepSeek payment_required
                     Err(LlmError::Provider {
@@ -199,7 +206,14 @@ impl OpenAIProvider {
 
             return match status.as_u16() {
                 401 => Err(LlmError::Unauthorized),
-                403 => Err(LlmError::Forbidden),
+                403 => Err(LlmError::Provider {
+                    code: "forbidden".into(),
+                    message: if error_text.is_empty() {
+                        "forbidden".into()
+                    } else {
+                        error_text
+                    },
+                }),
                 402 => Err(LlmError::Provider {
                     code: "payment_required".into(),
                     message: error_text,
