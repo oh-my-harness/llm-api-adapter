@@ -81,20 +81,23 @@ fn red_png_base64() -> String {
     use std::io::Write as _;
     let w: u32 = 64;
     let h: u32 = 64;
-    let mut raw = Vec::with_capacity((h * (1 + w * 3)) as usize);
+    let mut raw = vec![0u8; (h * (1 + w * 3)) as usize];
+    let mut pos = 0usize;
     for _ in 0..h {
-        raw.push(0u8);
+        pos += 1;
         for _ in 0..w {
-            raw.extend_from_slice(&[255, 0, 0]);
+            raw[pos..pos + 3].copy_from_slice(&[255, 0, 0]);
+            pos += 3;
         }
     }
+    debug_assert_eq!(pos, raw.len());
     let mut png = Vec::new();
     png.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
-    let mut chunk = |t: [u8; 4], d: &[u8], out: &mut Vec<u8>| {
+    let chunk = |t: [u8; 4], d: &[u8], out: &mut Vec<u8>| {
         out.extend_from_slice(&(d.len() as u32).to_be_bytes());
         out.extend_from_slice(&t);
         out.extend_from_slice(d);
-        let mut crc = flate2_crc32(&t, d);
+        let crc = flate2_crc32(&t, d);
         out.extend_from_slice(&crc.to_be_bytes());
     };
     fn flate2_crc32(t: &[u8; 4], d: &[u8]) -> u32 {
@@ -131,7 +134,6 @@ fn red_png_base64() -> String {
 }
 
 fn zlib_compress(data: &[u8]) -> Vec<u8> {
-    use std::io::Read as _;
     // Stored (uncompressed) deflate blocks: simple and dependency-free.
     let mut out = vec![0x78, 0x01];
     let mut chunks = data.chunks(65535).peekable();

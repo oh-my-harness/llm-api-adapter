@@ -2,7 +2,34 @@ use crate::{error::LlmError, types::*};
 use futures::{Stream, StreamExt, future::ready};
 use std::collections::HashMap;
 
-type BoxStream = futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>>;
+/// Stream item type shared by every boxed stream in this crate.
+pub(crate) type StreamItem = Result<StreamEvent, LlmError>;
+
+/// Send-boxed stream on native; wasm futures are !Send (JS promises), so wasm
+/// boxes locally. Same alias name keeps every signature unchanged.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type BoxStream = futures::stream::BoxStream<'static, StreamItem>;
+#[cfg(target_arch = "wasm32")]
+pub(crate) type BoxStream = futures::stream::LocalBoxStream<'static, StreamItem>;
+
+/// Target-appropriate boxing: `.boxed()` on native, `.boxed_local()` on wasm.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn box_stream<S>(s: S) -> BoxStream
+where
+    S: futures::Stream<Item = StreamItem> + Send + 'static,
+{
+    use futures::StreamExt;
+    s.boxed()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn box_stream<S>(s: S) -> BoxStream
+where
+    S: futures::Stream<Item = StreamItem> + 'static,
+{
+    use futures::StreamExt;
+    s.boxed_local()
+}
 
 /// Streaming response handle returned by [`crate::provider::Provider::chat_stream`].
 ///
@@ -14,6 +41,9 @@ type BoxStream = futures::stream::BoxStream<'static, Result<StreamEvent, LlmErro
 ///   events into a [`ChatResponse`] (note: `id` and `model` fields may be
 ///   empty when collected from streaming — use
 ///   [`crate::provider::Provider::chat`] if you need them).
+///
+/// On `wasm32` the underlying stream is `!Send` (see [`Provider`]'s wasm
+/// note); consume the handle on the JS task that created it.
 pub struct StreamHandle {
     pub(crate) id: String,
     pub(crate) model: String,
@@ -194,17 +224,15 @@ impl StreamHandle {
 }
 
 fn first_terminal_stream(inner: BoxStream) -> BoxStream {
-    inner
-        .scan(false, |terminated, event| {
-            if *terminated {
-                return ready(None);
-            }
-            if event.is_err() || matches!(&event, Ok(StreamEvent::MessageStop { .. })) {
-                *terminated = true;
-            }
-            ready(Some(event))
-        })
-        .boxed()
+    box_stream(inner.scan(false, |terminated, event| {
+        if *terminated {
+            return ready(None);
+        }
+        if event.is_err() || matches!(&event, Ok(StreamEvent::MessageStop { .. })) {
+            *terminated = true;
+        }
+        ready(Some(event))
+    }))
 }
 
 #[cfg(test)]
@@ -221,6 +249,20 @@ mod tests {
             stop_reason: StopReason::EndTurn,
             usage,
         })
+    }
+
+    #[test]
+    fn box_stream_alias_is_send_on_native() {
+        fn assert_send<T: Send>() {}
+        let s = futures::stream::iter(vec![Ok::<_, crate::error::LlmError>(
+            crate::types::StreamEvent::TextDelta {
+                index: 0,
+                text: "x".into(),
+            },
+        )]);
+        let boxed: BoxStream = s.boxed();
+        assert_send::<BoxStream>();
+        let _ = boxed;
     }
 
     #[tokio::test]

@@ -8,8 +8,9 @@ const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 ///
 /// Capabilities: reasoning ✓, json_schema ✗ (DeepSeek does not support
 /// `response_format: json_schema` — use `json_object` or strict tool use),
-/// images ✗ (DeepSeek V3/V4 do not accept image input; see integration test
-/// `integration_image_input_returns_error` for verification), documents ✗
+/// images ✗ (DeepSeek V3/V4 have no vision: as of 2026-09 the API accepts
+/// image_url content but silently ignores it — see integration test
+/// `integration_image_input_is_accepted_but_ignored`), documents ✗
 /// (no document input).
 ///
 /// # Example

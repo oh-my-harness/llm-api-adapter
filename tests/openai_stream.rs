@@ -379,3 +379,33 @@ async fn stream_handle_collect_reports_real_count_on_clean_eof_without_stop() {
         other => panic!("expected StreamIncomplete, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn stream_progressive_usage_does_not_terminate_early() {
+    // Regression: SiliconFlow includes `usage` in EVERY chunk (progressive
+    // accounting). MessageStop must fire only when finish_reason has been
+    // seen — not on the first chunk that merely carries usage. Before the
+    // fix, the stream terminated after chunk 1 with empty text, stop
+    // "unknown", and output_tokens 0.
+    let server = MockServer::start().await;
+    common::mock_stream(
+        &server,
+        include_str!("fixtures/openai/stream_progressive_usage.txt"),
+    )
+    .await;
+
+    let req = ChatRequest::builder("zai-org/GLM-5.2", 512)
+        .message(Message::User(vec![RequestContent::Text(
+            "Reply with exactly: WASM_OK".into(),
+        )]))
+        .build();
+
+    let handle = provider(&server).chat_stream(&req).await.unwrap();
+    let resp = handle.collect().await.unwrap();
+
+    assert_eq!(resp.text(), "WASM_OK");
+    assert!(matches!(resp.stop_reason, StopReason::EndTurn));
+    // Final usage (46), not chunk-1 usage (0).
+    assert_eq!(resp.usage.output_tokens, 46);
+    assert_eq!(resp.usage.reasoning_tokens, 43);
+}

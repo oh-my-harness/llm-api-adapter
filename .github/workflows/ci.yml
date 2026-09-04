@@ -41,6 +41,28 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+
+  wasm-check:
+    name: wasm32 check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain with wasm32 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check wasm32
+        run: cargo check --target wasm32-unknown-unknown
+
+
+      - name: Check wasm smoke crate
+        run: cargo check --manifest-path tests/wasm/Cargo.toml --target wasm32-unknown-unknown
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest

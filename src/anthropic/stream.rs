@@ -1,4 +1,5 @@
 use crate::LlmError;
+use crate::stream_handle::{BoxStream, box_stream};
 use crate::types::{ContentKind, StopReason, StreamEvent};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -232,9 +233,7 @@ pub fn parse_stop_reason(s: Option<&str>) -> StopReason {
 ///
 /// # Returns
 /// A boxed stream of StreamEvent results
-pub fn parse_stream(
-    response: reqwest::Response,
-) -> futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>> {
+pub fn parse_stream(response: reqwest::Response) -> BoxStream {
     use eventsource_stream::Eventsource;
     use futures::stream::{StreamExt, once};
 
@@ -247,74 +246,75 @@ pub fn parse_stream(
     let stop_received = Arc::new(AtomicBool::new(false));
     let finish_reason_seen = Arc::new(Mutex::new(None::<String>));
 
-    (event_stream
-        .flat_map({
-            let chunk_count = chunk_count.clone();
-            let finish_reason_seen = finish_reason_seen.clone();
-            let stop_received = stop_received.clone();
-            move |event_result| {
-                let mut results = Vec::new();
+    box_stream(
+        event_stream
+            .flat_map({
+                let chunk_count = chunk_count.clone();
+                let finish_reason_seen = finish_reason_seen.clone();
+                let stop_received = stop_received.clone();
+                move |event_result| {
+                    let mut results = Vec::new();
 
-                match event_result {
-                    Ok(event) => {
-                        chunk_count.fetch_add(1, Ordering::SeqCst);
+                    match event_result {
+                        Ok(event) => {
+                            chunk_count.fetch_add(1, Ordering::SeqCst);
 
-                        match serde_json::from_str::<AnthropicStreamEvent>(&event.data) {
-                            Ok(stream_event) => {
-                                let events = process_event(&mut state, stream_event);
-                                if let Some(ref sr) = state.pending_stop_reason {
-                                    *finish_reason_seen.lock().unwrap() = Some(sr.clone());
+                            match serde_json::from_str::<AnthropicStreamEvent>(&event.data) {
+                                Ok(stream_event) => {
+                                    let events = process_event(&mut state, stream_event);
+                                    if let Some(ref sr) = state.pending_stop_reason {
+                                        *finish_reason_seen.lock().unwrap() = Some(sr.clone());
+                                    }
+                                    results = events;
                                 }
-                                results = events;
-                            }
-                            Err(e) => {
-                                results.push(Err(LlmError::Decode(e)));
+                                Err(e) => {
+                                    results.push(Err(LlmError::Decode(e)));
+                                }
                             }
                         }
+                        Err(e) => {
+                            // Issue #11: SSE-level Err (connection drop) must
+                            // surface as StreamIncomplete, not LlmError::Stream —
+                            // `collect` short-circuits on the first Err so the
+                            // `.chain(once(...))` tail would never be polled.
+                            tracing::warn!(
+                                error = %e,
+                                received_chunks = chunk_count.load(Ordering::SeqCst),
+                                "SSE stream errored mid-flight; reporting StreamIncomplete"
+                            );
+                            results.push(Err(LlmError::StreamIncomplete {
+                                received_chunks: chunk_count.load(Ordering::SeqCst),
+                                finish_reason: finish_reason_seen.lock().unwrap().clone(),
+                            }));
+                            stop_received.store(true, Ordering::SeqCst);
+                        }
                     }
-                    Err(e) => {
-                        // Issue #11: SSE-level Err (connection drop) must
-                        // surface as StreamIncomplete, not LlmError::Stream —
-                        // `collect` short-circuits on the first Err so the
-                        // `.chain(once(...))` tail would never be polled.
-                        tracing::warn!(
-                            error = %e,
-                            received_chunks = chunk_count.load(Ordering::SeqCst),
-                            "SSE stream errored mid-flight; reporting StreamIncomplete"
-                        );
-                        results.push(Err(LlmError::StreamIncomplete {
-                            received_chunks: chunk_count.load(Ordering::SeqCst),
-                            finish_reason: finish_reason_seen.lock().unwrap().clone(),
-                        }));
+
+                    box_stream(futures::stream::iter(results))
+                }
+            })
+            .inspect({
+                let stop_received = stop_received.clone();
+                move |ev| {
+                    if let Ok(StreamEvent::MessageStop { .. }) = ev {
                         stop_received.store(true, Ordering::SeqCst);
                     }
                 }
-
-                futures::stream::iter(results).boxed()
-            }
-        })
-        .inspect({
-            let stop_received = stop_received.clone();
-            move |ev| {
-                if let Ok(StreamEvent::MessageStop { .. }) = ev {
-                    stop_received.store(true, Ordering::SeqCst);
-                }
-            }
-        })
-        .chain(
-            once(async move {
-                if stop_received.load(Ordering::SeqCst) {
-                    None
-                } else {
-                    Some(Err(LlmError::StreamIncomplete {
-                        received_chunks: chunk_count.load(Ordering::SeqCst),
-                        finish_reason: finish_reason_seen.lock().unwrap().clone(),
-                    }))
-                }
             })
-            .filter_map(|opt| async move { opt }),
-        )
-        .boxed()) as _
+            .chain(
+                once(async move {
+                    if stop_received.load(Ordering::SeqCst) {
+                        None
+                    } else {
+                        Some(Err(LlmError::StreamIncomplete {
+                            received_chunks: chunk_count.load(Ordering::SeqCst),
+                            finish_reason: finish_reason_seen.lock().unwrap().clone(),
+                        }))
+                    }
+                })
+                .filter_map(|opt| async move { opt }),
+            ),
+    )
 }
 
 #[cfg(test)]

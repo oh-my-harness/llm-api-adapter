@@ -122,6 +122,14 @@ pub(crate) fn check_documents_capability(
     Ok(())
 }
 
+/// Monotonic clock for latency measurement: `std::time::Instant` on native,
+/// `web_time::Instant` on wasm32 (std's panics there — no clock source in
+/// wasm32-unknown-unknown).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use web_time::Instant;
+
 /// Unified interface for any LLM provider.
 ///
 /// Implementors should be cheaply cloneable (hold an `Arc` internally) so
@@ -134,14 +142,20 @@ pub(crate) fn check_documents_capability(
 ///   features are not directly accessible.
 /// - **Native path**: the concrete provider type exposes additional methods
 ///   (e.g. `OpenAIProvider::chat_native()`) that accept a provider-specific
-///   `*Request` type (e.g. [`OpenAIRequest`]) carrying extensions like
+///   `*Request` type (e.g. [`OpenAIRequest`](crate::openai::OpenAIRequest)) carrying extensions like
 ///   `seed`, `frequency_penalty`, `extra_body`, etc.
 ///
 /// Use the universal path for provider-agnostic code and the native path
 /// when you need provider-specific knobs.
 ///
-/// [`OpenAIRequest`]: crate::openai::OpenAIRequest
-#[async_trait]
+/// # Wasm note
+///
+/// On `wasm32` the trait uses `async_trait(?Send)`: returned futures are
+/// `!Send` (JS promises under reqwest's wasm backend). Use providers from the
+/// JS task that created them (`spawn_local`, not `tokio::spawn`). On native
+/// targets the `Send` future contract is unchanged.
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait Provider: Send + Sync {
     /// Return the static capability flags for this provider.
     ///
@@ -174,7 +188,10 @@ pub trait Provider: Send + Sync {
 ///
 /// This trait is separate from [`Provider`] so existing chat-only providers and
 /// trait objects remain focused on chat/streaming behavior.
-#[async_trait]
+///
+/// On `wasm32` returned futures are `!Send` — same contract as [`Provider`].
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait EmbeddingProvider: Send + Sync {
     /// Generate embeddings for the request input batch.
     async fn embed(&self, req: &EmbeddingRequest) -> Result<EmbeddingResponse, LlmError>;

@@ -1,5 +1,6 @@
 use super::schema::{OaiChunk, OaiDelta};
 use crate::LlmError;
+use crate::stream_handle::{BoxStream, box_stream};
 use crate::types::{ContentKind, StopReason, StreamEvent};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -77,11 +78,16 @@ pub fn process_chunk(
         events.extend(process_delta(state, &choice.delta, parse_reasoning));
     }
 
-    // Emit MessageStop when this chunk carries usage. DeepSeek packs
+    // Emit MessageStop when this chunk is terminal. DeepSeek packs
     // finish_reason and usage into the same chunk; OpenAI sends a separate
-    // usage-only chunk after stream_options.include_usage. Both paths reach
-    // here once usage arrives.
-    if let Some(usage) = chunk.usage {
+    // usage-only chunk (empty choices) after stream_options.include_usage.
+    // SiliconFlow includes usage in EVERY chunk (progressive accounting),
+    // so usage alone must not terminate the stream: require finish_reason
+    // to have been seen, or an empty-choices usage-only chunk (which only
+    // follows a finish chunk on OpenAI-compatible gateways).
+    if let Some(usage) = chunk.usage
+        && (state.pending_stop.is_some() || chunk.choices.is_empty())
+    {
         for &idx in &state.open_blocks {
             events.push(Ok(StreamEvent::ContentStop {
                 index: idx,
@@ -231,7 +237,7 @@ pub fn parse_stream(
     response: reqwest::Response,
     parse_reasoning: bool,
     tolerant_keepalive: bool,
-) -> futures::stream::BoxStream<'static, Result<StreamEvent, LlmError>> {
+) -> BoxStream {
     use eventsource_stream::Eventsource;
     use futures::stream::{StreamExt, once};
 
@@ -244,121 +250,123 @@ pub fn parse_stream(
     let stop_received = Arc::new(AtomicBool::new(false));
     let finish_reason_seen = Arc::new(Mutex::new(None::<String>));
 
-    (event_stream
-        .flat_map({
-            let chunk_count = chunk_count.clone();
-            let finish_reason_seen = finish_reason_seen.clone();
-            let stop_received = stop_received.clone();
-            move |event_result| {
-                let mut results = Vec::new();
+    box_stream(
+        event_stream
+            .flat_map({
+                let chunk_count = chunk_count.clone();
+                let finish_reason_seen = finish_reason_seen.clone();
+                let stop_received = stop_received.clone();
+                move |event_result| {
+                    let mut results = Vec::new();
 
-                match event_result {
-                    Ok(event) => {
-                        chunk_count.fetch_add(1, Ordering::SeqCst);
+                    match event_result {
+                        Ok(event) => {
+                            chunk_count.fetch_add(1, Ordering::SeqCst);
 
-                        // Handle the [DONE] marker
-                        if event.data == "[DONE]" {
-                            if !state.message_stop_sent {
-                                // Path A tightening: no finish_reason and no usage → error.
-                                if state.pending_stop.is_none() {
+                            // Handle the [DONE] marker
+                            if event.data == "[DONE]" {
+                                if !state.message_stop_sent {
+                                    // Path A tightening: no finish_reason and no usage → error.
+                                    if state.pending_stop.is_none() {
+                                        for &idx in &state.open_blocks {
+                                            results.push(Ok(StreamEvent::ContentStop {
+                                                index: idx,
+                                                signature: None,
+                                            }));
+                                        }
+                                        state.open_blocks.clear();
+                                        results.push(Err(LlmError::StreamIncomplete {
+                                            received_chunks: chunk_count.load(Ordering::SeqCst),
+                                            finish_reason: None,
+                                        }));
+                                        state.message_stop_sent = true;
+                                        stop_received.store(true, Ordering::SeqCst);
+                                        return box_stream(futures::stream::iter(results));
+                                    }
+                                    // The response completed, but the provider did
+                                    // not supply authoritative usage.
+                                    let mut fallback = Vec::new();
                                     for &idx in &state.open_blocks {
-                                        results.push(Ok(StreamEvent::ContentStop {
+                                        fallback.push(Ok(StreamEvent::ContentStop {
                                             index: idx,
                                             signature: None,
                                         }));
                                     }
                                     state.open_blocks.clear();
-                                    results.push(Err(LlmError::StreamIncomplete {
-                                        received_chunks: chunk_count.load(Ordering::SeqCst),
-                                        finish_reason: None,
+                                    let stop_reason =
+                                        parse_stop_reason(state.pending_stop.as_deref());
+                                    fallback.push(Ok(StreamEvent::MessageStop {
+                                        stop_reason,
+                                        usage: crate::types::Usage::missing(),
                                     }));
                                     state.message_stop_sent = true;
-                                    stop_received.store(true, Ordering::SeqCst);
-                                    return futures::stream::iter(results).boxed();
+                                    return box_stream(futures::stream::iter(fallback));
                                 }
-                                // The response completed, but the provider did
-                                // not supply authoritative usage.
-                                let mut fallback = Vec::new();
-                                for &idx in &state.open_blocks {
-                                    fallback.push(Ok(StreamEvent::ContentStop {
-                                        index: idx,
-                                        signature: None,
-                                    }));
-                                }
-                                state.open_blocks.clear();
-                                let stop_reason = parse_stop_reason(state.pending_stop.as_deref());
-                                fallback.push(Ok(StreamEvent::MessageStop {
-                                    stop_reason,
-                                    usage: crate::types::Usage::missing(),
-                                }));
-                                state.message_stop_sent = true;
-                                return futures::stream::iter(fallback).boxed();
+                                return box_stream(futures::stream::iter(results));
                             }
-                            return futures::stream::iter(results).boxed();
-                        }
 
-                        // Parse the JSON chunk
-                        match serde_json::from_str::<OaiChunk>(&event.data) {
-                            Ok(chunk) => {
-                                let events = process_chunk(&mut state, chunk, parse_reasoning);
-                                if let Some(ref fr) = state.pending_stop {
-                                    *finish_reason_seen.lock().unwrap() = Some(fr.clone());
+                            // Parse the JSON chunk
+                            match serde_json::from_str::<OaiChunk>(&event.data) {
+                                Ok(chunk) => {
+                                    let events = process_chunk(&mut state, chunk, parse_reasoning);
+                                    if let Some(ref fr) = state.pending_stop {
+                                        *finish_reason_seen.lock().unwrap() = Some(fr.clone());
+                                    }
+                                    results = events;
                                 }
-                                results = events;
-                            }
-                            Err(e) => {
-                                if tolerant_keepalive {
-                                    let _ = e;
-                                } else {
-                                    results.push(Err(LlmError::Decode(e)));
+                                Err(e) => {
+                                    if tolerant_keepalive {
+                                        let _ = e;
+                                    } else {
+                                        results.push(Err(LlmError::Decode(e)));
+                                    }
                                 }
                             }
+                        }
+                        Err(e) => {
+                            // Issue #11: a real connection drop surfaces as an
+                            // SSE-level Err. `collect` short-circuits on the first
+                            // Err, so the `.chain(once(...))` tail below would
+                            // never be polled — emit StreamIncomplete here to
+                            // preserve received_chunks/finish_reason for callers
+                            // matching on that variant. The underlying transport
+                            // error is logged for diagnostics.
+                            tracing::warn!(
+                                error = %e,
+                                received_chunks = chunk_count.load(Ordering::SeqCst),
+                                "SSE stream errored mid-flight; reporting StreamIncomplete"
+                            );
+                            results.push(Err(LlmError::StreamIncomplete {
+                                received_chunks: chunk_count.load(Ordering::SeqCst),
+                                finish_reason: finish_reason_seen.lock().unwrap().clone(),
+                            }));
+                            stop_received.store(true, Ordering::SeqCst);
                         }
                     }
-                    Err(e) => {
-                        // Issue #11: a real connection drop surfaces as an
-                        // SSE-level Err. `collect` short-circuits on the first
-                        // Err, so the `.chain(once(...))` tail below would
-                        // never be polled — emit StreamIncomplete here to
-                        // preserve received_chunks/finish_reason for callers
-                        // matching on that variant. The underlying transport
-                        // error is logged for diagnostics.
-                        tracing::warn!(
-                            error = %e,
-                            received_chunks = chunk_count.load(Ordering::SeqCst),
-                            "SSE stream errored mid-flight; reporting StreamIncomplete"
-                        );
-                        results.push(Err(LlmError::StreamIncomplete {
-                            received_chunks: chunk_count.load(Ordering::SeqCst),
-                            finish_reason: finish_reason_seen.lock().unwrap().clone(),
-                        }));
+
+                    box_stream(futures::stream::iter(results))
+                }
+            })
+            .inspect({
+                let stop_received = stop_received.clone();
+                move |ev| {
+                    if let Ok(StreamEvent::MessageStop { .. }) = ev {
                         stop_received.store(true, Ordering::SeqCst);
                     }
                 }
-
-                futures::stream::iter(results).boxed()
-            }
-        })
-        .inspect({
-            let stop_received = stop_received.clone();
-            move |ev| {
-                if let Ok(StreamEvent::MessageStop { .. }) = ev {
-                    stop_received.store(true, Ordering::SeqCst);
-                }
-            }
-        })
-        .chain(
-            once(async move {
-                if stop_received.load(Ordering::SeqCst) {
-                    None
-                } else {
-                    Some(Err(LlmError::StreamIncomplete {
-                        received_chunks: chunk_count.load(Ordering::SeqCst),
-                        finish_reason: finish_reason_seen.lock().unwrap().clone(),
-                    }))
-                }
             })
-            .filter_map(|opt| async move { opt }),
-        )
-        .boxed()) as _
+            .chain(
+                once(async move {
+                    if stop_received.load(Ordering::SeqCst) {
+                        None
+                    } else {
+                        Some(Err(LlmError::StreamIncomplete {
+                            received_chunks: chunk_count.load(Ordering::SeqCst),
+                            finish_reason: finish_reason_seen.lock().unwrap().clone(),
+                        }))
+                    }
+                })
+                .filter_map(|opt| async move { opt }),
+            ),
+    )
 }

@@ -12,8 +12,13 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing = "0.1"
+
+# Latency clocks: std::time::Instant panics on wasm32 (no clock source in
+# wasm32-unknown-unknown); web-time uses performance.now() there. Gated so
+# native users don't carry the extra dep.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
