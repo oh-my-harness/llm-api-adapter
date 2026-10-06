@@ -12,6 +12,47 @@ fn provider(server: &MockServer) -> OpenAIProvider {
 }
 
 #[tokio::test]
+async fn modern_token_limit_uses_max_completion_tokens_with_tools() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_tool_call.json")).await;
+    let provider = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .max_tokens_scheme(llm_adapter::openai::MaxTokensScheme::MaxCompletionTokens)
+        .build();
+    let req = ChatRequest::builder("gpt-5.4-mini", 512)
+        .message(Message::User(vec![RequestContent::Text("Weather?".into())]))
+        .tool(ToolDef::new(
+            "get_weather",
+            "Get weather",
+            serde_json::json!({}),
+        ))
+        .build();
+
+    let response = provider.chat(&req).await.unwrap();
+    assert!(matches!(response.stop_reason, StopReason::ToolUse));
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["max_completion_tokens"], 512);
+    assert!(body.get("max_tokens").is_none());
+    assert_eq!(body["tools"][0]["function"]["name"], "get_weather");
+}
+
+#[tokio::test]
+async fn compatible_default_token_limit_uses_max_tokens() {
+    let server = MockServer::start().await;
+    common::mock_chat(&server, include_str!("fixtures/openai/chat_simple.json")).await;
+    let req = ChatRequest::builder("glm-4", 768)
+        .message(Message::User(vec![RequestContent::Text("Hello".into())]))
+        .build();
+
+    provider(&server).chat(&req).await.unwrap();
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["max_tokens"], 768);
+    assert!(body.get("max_completion_tokens").is_none());
+}
+
+#[tokio::test]
 async fn simple_chat_returns_text() {
     let server = MockServer::start().await;
     common::mock_chat(&server, include_str!("fixtures/openai/chat_simple.json")).await;

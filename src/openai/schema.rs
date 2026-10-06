@@ -20,8 +20,12 @@ pub(crate) struct OaiRequest {
     /// Sampling temperature (0.0 to 2.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    /// Maximum tokens to generate.
-    pub max_tokens: u32,
+    /// Legacy OpenAI-compatible output token limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// Modern official OpenAI output token limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_completion_tokens: Option<u32>,
     /// Nucleus sampling parameter (0.0 to 1.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,

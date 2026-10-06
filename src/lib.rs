@@ -176,9 +176,17 @@ mod tests {
             .message(Message::User(vec![RequestContent::Text("Hi".into())]))
             .temperature(0.5)
             .build();
-        let oai = to_oai(&req, None, openai::ThinkingScheme::None, false, true).unwrap();
+        let oai = to_oai(
+            &req,
+            None,
+            openai::ThinkingScheme::None,
+            openai::MaxTokensScheme::MaxTokens,
+            false,
+            true,
+        )
+        .unwrap();
         assert_eq!(oai.model, "gpt-4o");
-        assert_eq!(oai.max_tokens, 512);
+        assert_eq!(oai.max_tokens, Some(512));
         assert_eq!(oai.temperature, Some(0.5));
         assert_eq!(oai.messages.len(), 2);
         assert_eq!(oai.messages[0].role, "system");

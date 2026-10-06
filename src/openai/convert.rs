@@ -231,6 +231,7 @@ pub(crate) fn to_oai(
     req: &ChatRequest,
     ext: Option<&OpenAIExt>,
     scheme: super::ThinkingScheme,
+    max_tokens_scheme: super::MaxTokensScheme,
     stream: bool,
     documents_inline: bool,
 ) -> Result<OaiRequest, LlmError> {
@@ -272,7 +273,10 @@ pub(crate) fn to_oai(
         tools,
         tool_choice,
         temperature: params.temperature(),
-        max_tokens: params.max_tokens(),
+        max_tokens: (max_tokens_scheme == super::MaxTokensScheme::MaxTokens)
+            .then_some(params.max_tokens()),
+        max_completion_tokens: (max_tokens_scheme == super::MaxTokensScheme::MaxCompletionTokens)
+            .then_some(params.max_tokens()),
         top_p: params.top_p(),
         stop: params.stop_sequences().to_vec(),
         stream,
@@ -681,7 +685,15 @@ mod tests {
             )]))
             .response_format(ResponseFormat::JsonObject)
             .build();
-        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false, true).unwrap();
+        let oai = to_oai(
+            &req,
+            None,
+            super::super::ThinkingScheme::None,
+            super::super::MaxTokensScheme::MaxTokens,
+            false,
+            true,
+        )
+        .unwrap();
         let body = serde_json::to_value(&oai).unwrap();
         assert_eq!(body["response_format"]["type"], "json_object");
     }
@@ -700,7 +712,15 @@ mod tests {
                 strict: Some(true),
             })
             .build();
-        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false, true).unwrap();
+        let oai = to_oai(
+            &req,
+            None,
+            super::super::ThinkingScheme::None,
+            super::super::MaxTokensScheme::MaxTokens,
+            false,
+            true,
+        )
+        .unwrap();
         let body = serde_json::to_value(&oai).unwrap();
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(body["response_format"]["json_schema"]["name"], "out");
@@ -718,7 +738,15 @@ mod tests {
                 "hi".into(),
             )]))
             .build();
-        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false, true).unwrap();
+        let oai = to_oai(
+            &req,
+            None,
+            super::super::ThinkingScheme::None,
+            super::super::MaxTokensScheme::MaxTokens,
+            false,
+            true,
+        )
+        .unwrap();
         let body = serde_json::to_value(&oai).unwrap();
         assert!(body.get("response_format").is_none() || body["response_format"].is_null());
     }
@@ -751,7 +779,15 @@ mod tests {
             })
             .build();
 
-        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false, true).unwrap();
+        let oai = to_oai(
+            &req,
+            None,
+            super::super::ThinkingScheme::None,
+            super::super::MaxTokensScheme::MaxTokens,
+            false,
+            true,
+        )
+        .unwrap();
 
         assert_eq!(oai.messages.len(), 4);
         assert_eq!(oai.messages[2].role, "tool");
