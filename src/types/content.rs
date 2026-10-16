@@ -13,9 +13,22 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImageSource {
     /// Publicly accessible URL the provider fetches.
-    Url(String),
+    Url { url: String },
     /// Inline base64-encoded image. `media_type` must be a valid MIME type
     /// (e.g. `"image/jpeg"`, `"image/png"`, `"image/webp"`).
+    Base64 { media_type: String, data: String },
+}
+
+/// Source of document data for document-capable requests.
+///
+/// Anthropic accepts both URL and base64 PDF documents. OpenAI-compatible
+/// gateways such as GLM accept URL documents only (`file_url`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DocumentSource {
+    /// Publicly accessible file URL the provider fetches.
+    Url { url: String },
+    /// Inline base64-encoded document. `media_type` must be a valid MIME type
+    /// (e.g. `"application/pdf"`).
     Base64 { media_type: String, data: String },
 }
 
@@ -30,6 +43,9 @@ pub enum RequestContent {
     /// Image (URL or base64). Not all providers or models support images;
     /// check the target model's capabilities.
     Image(ImageSource),
+    /// Document (URL or base64). Not all providers support document input;
+    /// check `ProviderCapabilities::supports_documents()`.
+    Document(DocumentSource),
 }
 
 /// A tool call emitted by the model.
@@ -93,4 +109,22 @@ pub enum ResponseContent {
         /// `AnthropicNativeResponse::into_message()` to preserve it.
         signature: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn document_source_variants_construct() {
+        let url = DocumentSource::Url {
+            url: "https://example.com/doc.pdf".into(),
+        };
+        let b64 = DocumentSource::Base64 {
+            media_type: "application/pdf".into(),
+            data: "JVBERi0xLjQ=".into(),
+        };
+        let _doc = RequestContent::Document(url);
+        let _doc2 = RequestContent::Document(b64);
+    }
 }

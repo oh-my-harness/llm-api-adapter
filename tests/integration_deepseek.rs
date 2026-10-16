@@ -329,10 +329,14 @@ async fn integration_tool_call_required_via_extra_body_disable_thinking() {
 }
 
 #[tokio::test]
-async fn integration_image_input_returns_error() {
-    // DeepSeek V3/V4 do not support image input. Sending an image_url
-    // message should result in an error (4xx from the API).
-    // If this test starts *passing* (no error), update deepseek::client()
+async fn integration_image_input_is_accepted_but_ignored() {
+    // DeepSeek V3/V4 do not support image input. As of 2026-09 the API
+    // no longer rejects image_url content with a 4xx; it accepts the
+    // request, ignores the image (input_tokens ≈ text-only count), and
+    // the model replies that it cannot see the image. The capability must
+    // stay `images: false`: "accepted but ignored" is not vision support.
+    // If the model ever starts actually reading images (e.g. token count
+    // jumps to include image encoding), update deepseek::client()
     // capabilities to set images: true.
     let Some((p, model)) = provider() else {
         return;
@@ -341,17 +345,23 @@ async fn integration_image_input_returns_error() {
     let req = ChatRequest::builder(model, 256)
         .message(Message::User(vec![
             RequestContent::Text("What is in this image?".into()),
-            RequestContent::Image(
-                ImageSource::Url("https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg".into())
-            ),
+            RequestContent::Image(ImageSource::Url {
+                url: "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg".into(),
+            }),
         ]))
         .build();
 
-    let result = p.chat(&req).await;
+    let resp = p
+        .chat(&req)
+        .await
+        .expect("chat with image should succeed at the API level");
+    // The API accepts the request but the image is ignored: the model says
+    // it cannot see it, and usage reflects text-only input (no image tokens).
     assert!(
-        result.is_err(),
-        "Expected error for image input on DeepSeek (images not supported); got: {:?}",
-        result
+        resp.usage.input_tokens < 1000,
+        "input_tokens should stay text-only (image ignored); got {} — if image tokens \
+         are being counted, DeepSeek gained real vision; flip images: true",
+        resp.usage.input_tokens
     );
 }
 

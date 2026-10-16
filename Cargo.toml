@@ -14,8 +14,13 @@ serde_json = "1"
 serde_jcs = "0.2"
 sha2 = "0.10"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing = "0.1"
+
+# Latency clocks: std::time::Instant panics on wasm32 (no clock source in
+# wasm32-unknown-unknown); web-time uses performance.now() there. Gated so
+# native users don't carry the extra dep.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = "1"
 
 [dev-dependencies]
 bytes = "1"

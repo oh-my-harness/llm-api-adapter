@@ -1,2 +1,5 @@
 target/*
 .env
+tests/wasm/bindgen/
+tests/wasm/target/
+Cargo.lock.orig

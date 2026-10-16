@@ -6,8 +6,8 @@ use crate::types::{
 use serde::Serialize;
 
 use super::schema::{
-    OaiContent, OaiContentPart, OaiFunction, OaiImageUrl, OaiMessage, OaiRequest, OaiResponse,
-    OaiTool, OaiToolCall, OaiToolCallFunction, OaiUsage,
+    OaiContent, OaiContentPart, OaiFileData, OaiFunction, OaiImageUrl, OaiMessage, OaiRequest,
+    OaiResponse, OaiTool, OaiToolCall, OaiToolCallFunction, OaiUsage,
 };
 
 use crate::types::ThinkingLevel;
@@ -232,6 +232,7 @@ pub(crate) fn to_oai(
     ext: Option<&OpenAIExt>,
     scheme: super::ThinkingScheme,
     stream: bool,
+    documents_inline: bool,
 ) -> Result<OaiRequest, LlmError> {
     let default_ext = OpenAIExt::default();
     let ext = ext.unwrap_or(&default_ext);
@@ -240,7 +241,7 @@ pub(crate) fn to_oai(
     let messages = req
         .messages()
         .iter()
-        .map(message_to_oai)
+        .map(|m| message_to_oai(m, documents_inline))
         .collect::<Result<Vec<_>, _>>()?;
 
     // Convert tools
@@ -300,7 +301,7 @@ pub(crate) fn to_oai(
 }
 
 /// Convert a canonical Message to an OpenAI OaiMessage.
-fn message_to_oai(msg: &Message) -> Result<OaiMessage, LlmError> {
+fn message_to_oai(msg: &Message, documents_inline: bool) -> Result<OaiMessage, LlmError> {
     match msg {
         Message::System(text) => Ok(OaiMessage {
             role: "system".into(),
@@ -317,7 +318,7 @@ fn message_to_oai(msg: &Message) -> Result<OaiMessage, LlmError> {
                     OaiContent::Parts(
                         content
                             .iter()
-                            .map(req_content_to_part)
+                            .map(|c| req_content_to_part(c, documents_inline))
                             .collect::<Result<Vec<_>, _>>()?,
                     )
                 }
@@ -325,7 +326,7 @@ fn message_to_oai(msg: &Message) -> Result<OaiMessage, LlmError> {
                 OaiContent::Parts(
                     content
                         .iter()
-                        .map(req_content_to_part)
+                        .map(|c| req_content_to_part(c, documents_inline))
                         .collect::<Result<Vec<_>, _>>()?,
                 )
             };
@@ -388,7 +389,7 @@ fn message_to_oai(msg: &Message) -> Result<OaiMessage, LlmError> {
                     OaiContent::Parts(
                         content
                             .iter()
-                            .map(req_content_to_part)
+                            .map(|c| req_content_to_part(c, documents_inline))
                             .collect::<Result<Vec<_>, _>>()?,
                     )
                 }
@@ -396,7 +397,7 @@ fn message_to_oai(msg: &Message) -> Result<OaiMessage, LlmError> {
                 OaiContent::Parts(
                     content
                         .iter()
-                        .map(req_content_to_part)
+                        .map(|c| req_content_to_part(c, documents_inline))
                         .collect::<Result<Vec<_>, _>>()?,
                 )
             };
@@ -413,13 +414,16 @@ fn message_to_oai(msg: &Message) -> Result<OaiMessage, LlmError> {
 }
 
 /// Convert a canonical RequestContent to an OpenAI OaiContentPart.
-fn req_content_to_part(c: &RequestContent) -> Result<OaiContentPart, LlmError> {
+fn req_content_to_part(
+    c: &RequestContent,
+    documents_inline: bool,
+) -> Result<OaiContentPart, LlmError> {
     match c {
         RequestContent::Text(t) => Ok(OaiContentPart::Text { text: t.clone() }),
         RequestContent::Image(img) => {
             use crate::types::ImageSource;
             let url = match img {
-                ImageSource::Url(u) => u.clone(),
+                ImageSource::Url { url: u } => u.clone(),
                 ImageSource::Base64 { media_type, data } => {
                     format!("data:{};base64,{}", media_type, data)
                 }
@@ -427,6 +431,36 @@ fn req_content_to_part(c: &RequestContent) -> Result<OaiContentPart, LlmError> {
             Ok(OaiContentPart::ImageUrl {
                 image_url: OaiImageUrl { url },
             })
+        }
+        RequestContent::Document(doc) => {
+            use crate::types::DocumentSource;
+            match doc {
+                // Zhipu-style: the gateway's own document part keyed by URL.
+                DocumentSource::Url { url } if !documents_inline => Ok(OaiContentPart::FileUrl {
+                    file_url: OaiImageUrl { url: url.clone() },
+                }),
+                // OpenAI-ecosystem standard (OpenAI official / OpenRouter):
+                // {"type":"file","file":{"file_data":"data:<mt>;base64,<data>"}}.
+                DocumentSource::Base64 { media_type, data } if documents_inline => {
+                    Ok(OaiContentPart::File {
+                        file: OaiFileData {
+                            file_data: format!("data:{media_type};base64,{data}"),
+                        },
+                    })
+                }
+                DocumentSource::Url { url } => Ok(OaiContentPart::File {
+                    file: OaiFileData {
+                        file_data: url.clone(),
+                    },
+                }),
+                DocumentSource::Base64 { media_type, .. } => {
+                    Err(LlmError::InvalidRequest(format!(
+                        "this endpoint accepts documents by URL only (file_url); \
+                         inline base64 documents ({media_type}) require the documents_inline \
+                         capability — enable it on the builder or host the file at a URL"
+                    )))
+                }
+            }
         }
     }
 }
@@ -647,7 +681,7 @@ mod tests {
             )]))
             .response_format(ResponseFormat::JsonObject)
             .build();
-        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false).unwrap();
+        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false, true).unwrap();
         let body = serde_json::to_value(&oai).unwrap();
         assert_eq!(body["response_format"]["type"], "json_object");
     }
@@ -666,7 +700,7 @@ mod tests {
                 strict: Some(true),
             })
             .build();
-        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false).unwrap();
+        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false, true).unwrap();
         let body = serde_json::to_value(&oai).unwrap();
         assert_eq!(body["response_format"]["type"], "json_schema");
         assert_eq!(body["response_format"]["json_schema"]["name"], "out");
@@ -684,7 +718,7 @@ mod tests {
                 "hi".into(),
             )]))
             .build();
-        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false).unwrap();
+        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false, true).unwrap();
         let body = serde_json::to_value(&oai).unwrap();
         assert!(body.get("response_format").is_none() || body["response_format"].is_null());
     }
@@ -717,7 +751,7 @@ mod tests {
             })
             .build();
 
-        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false).unwrap();
+        let oai = to_oai(&req, None, super::super::ThinkingScheme::None, false, true).unwrap();
 
         assert_eq!(oai.messages.len(), 4);
         assert_eq!(oai.messages[2].role, "tool");
@@ -806,9 +840,12 @@ mod tests {
 
     #[test]
     fn req_content_to_part_image_url() {
-        let part = req_content_to_part(&RC::Image(ImageSource::Url(
-            "https://example.com/img.png".into(),
-        )))
+        let part = req_content_to_part(
+            &RC::Image(ImageSource::Url {
+                url: "https://example.com/img.png".into(),
+            }),
+            true,
+        )
         .unwrap();
         match part {
             OaiContentPart::ImageUrl { image_url } => {
@@ -820,10 +857,13 @@ mod tests {
 
     #[test]
     fn req_content_to_part_image_base64() {
-        let part = req_content_to_part(&RC::Image(ImageSource::Base64 {
-            media_type: "image/png".into(),
-            data: "iVBORw0KGgo=".into(),
-        }))
+        let part = req_content_to_part(
+            &RC::Image(ImageSource::Base64 {
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgo=".into(),
+            }),
+            true,
+        )
         .unwrap();
         match part {
             OaiContentPart::ImageUrl { image_url } => {
@@ -831,5 +871,87 @@ mod tests {
             }
             other => panic!("expected ImageUrl, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn req_content_to_part_document_url() {
+        let part = req_content_to_part(
+            &RC::Document(crate::types::DocumentSource::Url {
+                url: "https://cdn.example.com/doc.pdf".into(),
+            }),
+            false,
+        )
+        .unwrap();
+        match part {
+            OaiContentPart::FileUrl { ref file_url } => {
+                assert_eq!(file_url.url, "https://cdn.example.com/doc.pdf");
+                // Wire format: {"type":"file_url","file_url":{"url":...}}
+                let body = serde_json::to_value(&part).unwrap();
+                assert_eq!(body["type"], "file_url");
+                assert_eq!(body["file_url"]["url"], "https://cdn.example.com/doc.pdf");
+            }
+            other => panic!("expected FileUrl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn req_content_to_part_document_base64_inline_when_capable() {
+        // OpenAI-ecosystem standard: {"type":"file","file":{file_data: data-URL}}.
+        // Used by OpenAI official, OpenRouter, DeepInfra... — gated by the
+        // documents_inline capability flag threaded through the request.
+        let part = req_content_to_part(
+            &RC::Document(crate::types::DocumentSource::Base64 {
+                media_type: "application/pdf".into(),
+                data: "JVBERi0=".into(),
+            }),
+            true,
+        )
+        .unwrap();
+        let body = serde_json::to_value(&part).unwrap();
+        assert_eq!(body["type"], "file");
+        assert_eq!(
+            body["file"]["file_data"],
+            "data:application/pdf;base64,JVBERi0="
+        );
+    }
+
+    #[test]
+    fn req_content_to_part_document_url_inline_when_capable() {
+        // On inline-capable (OpenAI-ecosystem) endpoints, URL documents go out
+        // as the standard `file` part with a plain URL in file_data — not the
+        // Zhipu-style `file_url` part.
+        let part = req_content_to_part(
+            &RC::Document(crate::types::DocumentSource::Url {
+                url: "https://cdn.example.com/doc.pdf".into(),
+            }),
+            true,
+        )
+        .unwrap();
+        let body = serde_json::to_value(&part).unwrap();
+        assert_eq!(body["type"], "file");
+        assert_eq!(body["file"]["file_data"], "https://cdn.example.com/doc.pdf");
+    }
+
+    #[test]
+    fn req_content_to_part_document_base64_rejected() {
+        // Zhipu-style endpoints accept URL documents only; base64 documents
+        // must be a clear InvalidRequest, not silent.
+        let err = req_content_to_part(
+            &RC::Document(crate::types::DocumentSource::Base64 {
+                media_type: "application/pdf".into(),
+                data: "JVBERi0=".into(),
+            }),
+            false,
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("URL"),
+            "error must mention URL-only limitation: {msg}"
+        );
+        assert!(
+            msg.contains("document"),
+            "error must mention document: {msg}"
+        );
     }
 }

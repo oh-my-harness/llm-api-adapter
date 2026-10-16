@@ -109,13 +109,22 @@ fn http_client_builder(
     read_timeout: Duration,
     request_timeout: Option<Duration>,
 ) -> reqwest::ClientBuilder {
+    #[cfg(not(target_arch = "wasm32"))]
     let mut builder = reqwest::Client::builder()
         .connect_timeout(connect_timeout)
         .read_timeout(read_timeout);
-    if let Some(timeout) = request_timeout {
-        builder = builder.timeout(timeout);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(timeout) = request_timeout {
+            builder = builder.timeout(timeout);
+        }
+        builder
     }
-    builder
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (connect_timeout, read_timeout, request_timeout);
+        reqwest::Client::builder()
+    }
 }
 
 fn strict_responses_client_builder(
@@ -158,6 +167,8 @@ impl OpenAIProvider {
                 reasoning: true,
                 json_schema: true,
                 embeddings: true,
+                documents: false,
+                documents_inline: false,
             },
             connect_timeout: None,
             read_timeout: None,
@@ -201,7 +212,14 @@ impl OpenAIProvider {
 
             return match status.as_u16() {
                 401 => Err(LlmError::Unauthorized),
-                403 => Err(LlmError::Forbidden),
+                403 => Err(LlmError::Provider {
+                    code: "forbidden".into(),
+                    message: if error_text.is_empty() {
+                        "forbidden".into()
+                    } else {
+                        error_text
+                    },
+                }),
                 402 => {
                     // DeepSeek payment_required
                     Err(LlmError::Provider {
@@ -246,7 +264,14 @@ impl OpenAIProvider {
 
             return match status.as_u16() {
                 401 => Err(LlmError::Unauthorized),
-                403 => Err(LlmError::Forbidden),
+                403 => Err(LlmError::Provider {
+                    code: "forbidden".into(),
+                    message: if error_text.is_empty() {
+                        "forbidden".into()
+                    } else {
+                        error_text
+                    },
+                }),
                 402 => Err(LlmError::Provider {
                     code: "payment_required".into(),
                     message: error_text,
@@ -268,7 +293,14 @@ impl OpenAIProvider {
     /// `reasoning_effort`, `extra_body`, etc. — without sacrificing the
     /// type-safe canonical request shape.
     pub async fn chat_native(&self, req: &OpenAIRequest) -> Result<ChatResponse, LlmError> {
-        let oai_req = convert::to_oai(&req.base, Some(&req.ext), self.thinking_scheme, false)?;
+        crate::provider::check_documents_capability(&req.base, &self.capabilities)?;
+        let oai_req = convert::to_oai(
+            &req.base,
+            Some(&req.ext),
+            self.thinking_scheme,
+            false,
+            self.capabilities.documents_inline,
+        )?;
         let extra_body = self.resolve_extra_body(&req.ext.extra_body, req.base.thinking())?;
         let response = self.send(&oai_req, extra_body.as_deref(), false).await?;
         let oai_resp = response.json::<schema::OaiResponse>().await?;
@@ -280,9 +312,16 @@ impl OpenAIProvider {
     /// Accepts `OpenAIRequest` (a `ChatRequest` paired with `OpenAIExt`) so
     /// callers can use provider-specific streaming extensions.
     pub async fn chat_stream_native(&self, req: &OpenAIRequest) -> Result<StreamHandle, LlmError> {
-        let oai_req = convert::to_oai(&req.base, Some(&req.ext), self.thinking_scheme, true)?;
+        crate::provider::check_documents_capability(&req.base, &self.capabilities)?;
+        let oai_req = convert::to_oai(
+            &req.base,
+            Some(&req.ext),
+            self.thinking_scheme,
+            true,
+            self.capabilities.documents_inline,
+        )?;
         let extra_body = self.resolve_extra_body(&req.ext.extra_body, req.base.thinking())?;
-        let start = std::time::Instant::now();
+        let start = crate::provider::Instant::now();
         let response = self.send(&oai_req, extra_body.as_deref(), true).await?;
         let latency_ms = start.elapsed().as_millis() as u64;
         let status_code = Some(response.status().as_u16());
@@ -456,9 +495,35 @@ impl OpenAIProviderBuilder {
         self
     }
 
-    /// Override provider capabilities (used by factory functions such as `deepseek::client`).
-    pub(crate) fn capabilities(mut self, caps: crate::provider::ProviderCapabilities) -> Self {
+    /// Override provider capabilities wholesale.
+    ///
+    /// Mostly for factory functions such as `deepseek::client`; for a single
+    /// flag prefer the focused setters (e.g. [`Self::documents`]).
+    pub fn capabilities(mut self, caps: crate::provider::ProviderCapabilities) -> Self {
         self.capabilities = caps;
+        self
+    }
+
+    /// Toggle document (PDF) input support.
+    ///
+    /// Default `false`: plain OpenAI Chat Completions has no document input,
+    /// and requests carrying `RequestContent::Document` fail at construction
+    /// time instead of hitting the server. Enable this for OpenAI-compatible
+    /// gateways whose models accept document parts (e.g. GLM `file_url`).
+    pub fn documents(mut self, enabled: bool) -> Self {
+        self.capabilities.documents = enabled;
+        self
+    }
+
+    /// Toggle **inline** base64 document support (the OpenAI-ecosystem `file`
+    /// part with a data URL). Implies `documents(true)`. Use for gateways in
+    /// the OpenAI-ecosystem mold (OpenAI official, OpenRouter, DeepInfra…);
+    /// Zhipu-style `file_url`-only endpoints keep this `false`.
+    pub fn documents_inline(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.capabilities.documents = true;
+        }
+        self.capabilities.documents_inline = enabled;
         self
     }
 
@@ -470,6 +535,9 @@ impl OpenAIProviderBuilder {
     }
 
     /// Connect-phase timeout (DNS + TCP + TLS). Default 30s.
+    ///
+    /// Native only: ignored on `wasm32` (reqwest's wasm backend has no
+    /// timeout support).
     pub fn connect_timeout(mut self, d: Duration) -> Self {
         self.connect_timeout = Some(d);
         self
@@ -477,12 +545,16 @@ impl OpenAIProviderBuilder {
 
     /// Interval between two reads. Default 60s.
     /// Streaming-safe: as long as chunks keep arriving, this never triggers.
+    ///
+    /// Native only: ignored on `wasm32`.
     pub fn read_timeout(mut self, d: Duration) -> Self {
         self.read_timeout = Some(d);
         self
     }
 
     /// Total request lifecycle timeout. Default None (no total ceiling).
+    ///
+    /// Native only: ignored on `wasm32`.
     pub fn request_timeout(mut self, d: Duration) -> Self {
         self.request_timeout = Some(d);
         self
@@ -532,7 +604,8 @@ impl OpenAIProviderBuilder {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl Provider for OpenAIProvider {
     fn capabilities(&self) -> crate::provider::ProviderCapabilities {
         self.capabilities.clone()
@@ -561,7 +634,8 @@ impl Provider for OpenAIProvider {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl EmbeddingProvider for OpenAIProvider {
     async fn embed(&self, req: &EmbeddingRequest) -> Result<EmbeddingResponse, LlmError> {
         self.embed_native(req).await

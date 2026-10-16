@@ -84,6 +84,8 @@ pub(crate) enum AnthropicContentBlock {
     },
     /// Image content.
     Image { source: AnthropicImageSource },
+    /// Document content (e.g. PDF). Source structure shared with images.
+    Document { source: AnthropicImageSource },
     /// Tool use request from the model.
     ToolUse {
         id: String,

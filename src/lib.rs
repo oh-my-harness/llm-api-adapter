@@ -27,7 +27,9 @@ mod tests {
     fn content_construction() {
         use types::{ImageSource, RequestContent, ResponseContent, ToolInvocation};
         let _text = RequestContent::Text("hello".into());
-        let _img = RequestContent::Image(ImageSource::Url("https://example.com/img.png".into()));
+        let _img = RequestContent::Image(ImageSource::Url {
+            url: "https://example.com/img.png".into(),
+        });
         let _resp = ResponseContent::Text("world".into());
         let _tool = ResponseContent::ToolInvocation(ToolInvocation {
             id: "call_1".into(),
@@ -174,7 +176,7 @@ mod tests {
             .message(Message::User(vec![RequestContent::Text("Hi".into())]))
             .temperature(0.5)
             .build();
-        let oai = to_oai(&req, None, openai::ThinkingScheme::None, false).unwrap();
+        let oai = to_oai(&req, None, openai::ThinkingScheme::None, false, true).unwrap();
         assert_eq!(oai.model, "gpt-4o");
         assert_eq!(oai.max_tokens, 512);
         assert_eq!(oai.temperature, Some(0.5));

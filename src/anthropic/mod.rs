@@ -130,6 +130,8 @@ impl AnthropicProvider {
                 reasoning: true,
                 json_schema: false,
                 embeddings: false,
+                documents: true,
+                documents_inline: true,
             },
             connect_timeout: None,
             read_timeout: None,
@@ -174,7 +176,14 @@ impl AnthropicProvider {
 
             return match status.as_u16() {
                 401 => Err(LlmError::Unauthorized),
-                403 => Err(LlmError::Forbidden),
+                403 => Err(LlmError::Provider {
+                    code: "forbidden".into(),
+                    message: if error_text.is_empty() {
+                        "forbidden".into()
+                    } else {
+                        error_text
+                    },
+                }),
                 404 => Err(LlmError::InvalidRequest(format!("not_found: {error_text}"))),
                 413 => Err(LlmError::InvalidRequest(format!(
                     "request_too_large: {error_text}"
@@ -198,6 +207,7 @@ impl AnthropicProvider {
         &self,
         req: &AnthropicRequest,
     ) -> Result<AnthropicNativeResponse, LlmError> {
+        crate::provider::check_documents_capability(&req.base, &self.capabilities)?;
         let wire_req = convert::to_anthropic(&req.base, Some(&req.ext), false)?;
         let response = self.send(&wire_req, false).await?;
         let wire_resp = response.json::<schema::AnthropicResponse>().await?;
@@ -216,8 +226,9 @@ impl AnthropicProvider {
         &self,
         req: &AnthropicRequest,
     ) -> Result<StreamHandle, LlmError> {
+        crate::provider::check_documents_capability(&req.base, &self.capabilities)?;
         let wire_req = convert::to_anthropic(&req.base, Some(&req.ext), true)?;
-        let start = std::time::Instant::now();
+        let start = crate::provider::Instant::now();
         let response = self.send(&wire_req, true).await?;
         let latency_ms = start.elapsed().as_millis() as u64;
         let status_code = Some(response.status().as_u16());
@@ -248,6 +259,9 @@ impl AnthropicProviderBuilder {
     }
 
     /// Connect-phase timeout (DNS + TCP + TLS). Default 30s.
+    ///
+    /// Native only: ignored on `wasm32` (reqwest's wasm backend has no
+    /// timeout support).
     pub fn connect_timeout(mut self, d: Duration) -> Self {
         self.connect_timeout = Some(d);
         self
@@ -255,12 +269,16 @@ impl AnthropicProviderBuilder {
 
     /// Interval between two reads. Default 60s.
     /// Streaming-safe: as long as chunks keep arriving, this never triggers.
+    ///
+    /// Native only: ignored on `wasm32`.
     pub fn read_timeout(mut self, d: Duration) -> Self {
         self.read_timeout = Some(d);
         self
     }
 
     /// Total request lifecycle timeout. Default None (no total ceiling).
+    ///
+    /// Native only: ignored on `wasm32`.
     pub fn request_timeout(mut self, d: Duration) -> Self {
         self.request_timeout = Some(d);
         self
@@ -270,13 +288,25 @@ impl AnthropicProviderBuilder {
     pub fn build(self) -> AnthropicProvider {
         AnthropicProvider {
             client: {
-                let mut b = reqwest::Client::builder()
-                    .connect_timeout(self.connect_timeout.unwrap_or(Duration::from_secs(30)))
-                    .read_timeout(self.read_timeout.unwrap_or(Duration::from_secs(60)));
-                if let Some(rt) = self.request_timeout {
-                    b = b.timeout(rt);
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let mut b = reqwest::Client::builder()
+                        .connect_timeout(self.connect_timeout.unwrap_or(Duration::from_secs(30)))
+                        .read_timeout(self.read_timeout.unwrap_or(Duration::from_secs(60)));
+                    if let Some(rt) = self.request_timeout {
+                        b = b.timeout(rt);
+                    }
+                    b.build().expect("failed to build HTTP client")
                 }
-                b.build().expect("failed to build HTTP client")
+                #[cfg(target_arch = "wasm32")]
+                {
+                    // reqwest's wasm ClientBuilder exposes no timeout methods
+                    // (verified for 0.12.x); timeouts are the JS host's job
+                    // (e.g. AbortController on the fetch call).
+                    reqwest::Client::builder()
+                        .build()
+                        .expect("failed to build HTTP client")
+                }
             },
             api_key: self.api_key,
             base_url: self.base_url,
@@ -286,7 +316,8 @@ impl AnthropicProviderBuilder {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl Provider for AnthropicProvider {
     fn capabilities(&self) -> crate::provider::ProviderCapabilities {
         self.capabilities.clone()

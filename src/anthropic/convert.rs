@@ -205,7 +205,7 @@ pub(crate) fn to_anthropic(
     for msg in &conversation_messages {
         match msg {
             Message::User(content) => {
-                wire_messages.push(user_content_to_wire(content));
+                wire_messages.push(user_content_to_wire(content)?);
             }
             Message::Assistant(content) => {
                 wire_messages.push(assistant_content_to_wire(content));
@@ -218,7 +218,7 @@ pub(crate) fn to_anthropic(
                 // Tool results become a user message with a tool_result block.
                 let tool_result_block = AnthropicContentBlock::ToolResult {
                     tool_use_id: invocation_id.clone(),
-                    content: request_content_to_blocks(content),
+                    content: request_content_to_blocks(content)?,
                     is_error: if *is_error { Some(true) } else { None },
                 };
                 wire_messages.push(AnthropicWireMessageCompat {
@@ -430,12 +430,14 @@ fn content_starts_with_tool_result(content: &AnthropicContentBlocks) -> bool {
 }
 
 /// Convert user request content to an Anthropic wire message.
-fn user_content_to_wire(content: &[RequestContent]) -> AnthropicWireMessageCompat {
-    let blocks = request_content_to_blocks(content);
-    AnthropicWireMessageCompat {
+fn user_content_to_wire(
+    content: &[RequestContent],
+) -> Result<AnthropicWireMessageCompat, LlmError> {
+    let blocks = request_content_to_blocks(content)?;
+    Ok(AnthropicWireMessageCompat {
         role: "user".into(),
         content: blocks,
-    }
+    })
 }
 
 /// Convert assistant response content to an Anthropic wire message.
@@ -500,7 +502,9 @@ fn assistant_content_to_wire(content: &[ResponseContent]) -> AnthropicWireMessag
 }
 
 /// Convert canonical `RequestContent` items into `AnthropicContentBlocks`.
-fn request_content_to_blocks(content: &[RequestContent]) -> AnthropicContentBlocks {
+fn request_content_to_blocks(
+    content: &[RequestContent],
+) -> Result<AnthropicContentBlocks, LlmError> {
     let mut blocks: Vec<AnthropicContentBlock> = Vec::new();
     for item in content {
         match item {
@@ -512,7 +516,7 @@ fn request_content_to_blocks(content: &[RequestContent]) -> AnthropicContentBloc
             }
             RequestContent::Image(img) => {
                 let (source_type, media_type, data, url) = match img {
-                    crate::types::ImageSource::Url(u) => {
+                    crate::types::ImageSource::Url { url: u } => {
                         ("url".into(), None, None, Some(u.clone()))
                     }
                     crate::types::ImageSource::Base64 { media_type, data } => (
@@ -531,15 +535,34 @@ fn request_content_to_blocks(content: &[RequestContent]) -> AnthropicContentBloc
                     },
                 });
             }
+            RequestContent::Document(doc) => {
+                use crate::types::DocumentSource;
+                let (source_type, media_type, data, url) = match doc {
+                    DocumentSource::Url { url } => ("url".into(), None, None, Some(url.clone())),
+                    DocumentSource::Base64 { media_type, data } => (
+                        "base64".into(),
+                        Some(media_type.clone()),
+                        Some(data.clone()),
+                        None,
+                    ),
+                };
+                blocks.push(AnthropicContentBlock::Document {
+                    source: AnthropicImageSource {
+                        source_type,
+                        media_type,
+                        data,
+                        url,
+                    },
+                });
+            }
         }
     }
-
     if blocks.len() == 1
         && let AnthropicContentBlock::Text { text, .. } = &blocks[0]
     {
-        return AnthropicContentBlocks::Text(text.clone());
+        return Ok(AnthropicContentBlocks::Text(text.clone()));
     }
-    AnthropicContentBlocks::Blocks(blocks)
+    Ok(AnthropicContentBlocks::Blocks(blocks))
 }
 
 /// Enforce that messages alternate user/assistant and start with user.
@@ -1442,7 +1465,9 @@ mod tests {
         let req = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
             .message(Message::User(vec![
                 RC::Text("Describe this image:".into()),
-                RC::Image(ImageSource::Url("https://example.com/img.png".into())),
+                RC::Image(ImageSource::Url {
+                    url: "https://example.com/img.png".into(),
+                }),
             ]))
             .build();
         let wire = to_anthropic(&req, None, false).unwrap();
@@ -1485,6 +1510,56 @@ mod tests {
                 }
             }
             other => panic!("expected Blocks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn document_conversion_url() {
+        let req = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
+            .message(Message::User(vec![
+                RC::Text("Summarize this document:".into()),
+                RC::Document(crate::types::DocumentSource::Url {
+                    url: "https://example.com/report.pdf".into(),
+                }),
+            ]))
+            .build();
+        let wire = to_anthropic(&req, None, false).unwrap();
+        match &wire.messages[0].content {
+            AnthropicContentBlocks::Blocks(blocks) => match &blocks[1] {
+                AnthropicContentBlock::Document { source } => {
+                    assert_eq!(source.source_type, "url");
+                    assert_eq!(
+                        source.url.as_deref(),
+                        Some("https://example.com/report.pdf")
+                    );
+                }
+                other => panic!("expected Document, got {other:?}"),
+            },
+            other => panic!("expected Blocks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn document_conversion_base64() {
+        let req = ChatRequest::builder("claude-sonnet-4-20250514", 1024)
+            .message(Message::User(vec![RC::Document(
+                crate::types::DocumentSource::Base64 {
+                    media_type: "application/pdf".into(),
+                    data: "JVBERi0xLjQ=".into(),
+                },
+            )]))
+            .build();
+        let wire = to_anthropic(&req, None, false).unwrap();
+        match &wire.messages[0].content {
+            AnthropicContentBlocks::Blocks(blocks) => match &blocks[0] {
+                AnthropicContentBlock::Document { source } => {
+                    assert_eq!(source.source_type, "base64");
+                    assert_eq!(source.media_type.as_deref(), Some("application/pdf"));
+                    assert_eq!(source.data.as_deref(), Some("JVBERi0xLjQ="));
+                }
+                other => panic!("expected Document, got {other:?}"),
+            },
+            AnthropicContentBlocks::Text(t) => panic!("expected Blocks, got Text {t}"),
         }
     }
 
