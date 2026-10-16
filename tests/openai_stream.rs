@@ -15,6 +15,44 @@ fn provider(server: &MockServer) -> OpenAIProvider {
 }
 
 #[tokio::test]
+async fn modern_token_limit_preserves_streaming_tool_calls() {
+    let server = MockServer::start().await;
+    common::mock_stream(
+        &server,
+        include_str!("fixtures/openai/stream_tool_call.txt"),
+    )
+    .await;
+    let provider = OpenAIProvider::builder("test-key")
+        .base_url(server.uri())
+        .max_tokens_scheme(llm_adapter::openai::MaxTokensScheme::MaxCompletionTokens)
+        .build();
+    let req = ChatRequest::builder("gpt-5.4-mini", 1024)
+        .message(Message::User(vec![RequestContent::Text("Weather?".into())]))
+        .tool(ToolDef::new(
+            "get_weather",
+            "Get weather",
+            serde_json::json!({}),
+        ))
+        .build();
+
+    let response = provider
+        .chat_stream(&req)
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert!(matches!(response.stop_reason, StopReason::ToolUse));
+    assert_eq!(response.tool_invocations().count(), 1);
+    let received = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+    assert_eq!(body["max_completion_tokens"], 1024);
+    assert!(body.get("max_tokens").is_none());
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["stream_options"]["include_usage"], true);
+}
+
+#[tokio::test]
 async fn stream_simple_collects_to_response() {
     let server = MockServer::start().await;
     common::mock_stream(&server, include_str!("fixtures/openai/stream_simple.txt")).await;

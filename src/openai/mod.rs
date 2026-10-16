@@ -44,6 +44,16 @@ pub enum ThinkingScheme {
     ThinkingToggle,
 }
 
+/// Which Chat Completions field carries the provider-neutral output token limit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MaxTokensScheme {
+    /// Legacy OpenAI-compatible field (default).
+    #[default]
+    MaxTokens,
+    /// Modern official OpenAI field.
+    MaxCompletionTokens,
+}
+
 /// OpenAI (and OpenAI-compatible) provider implementation.
 ///
 /// Supports the OpenAI Chat Completions API and any compatible endpoint
@@ -69,6 +79,7 @@ pub struct OpenAIProvider {
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
     thinking_scheme: ThinkingScheme,
+    max_tokens_scheme: MaxTokensScheme,
     capabilities: crate::provider::ProviderCapabilities,
 }
 
@@ -86,6 +97,7 @@ pub struct OpenAIProviderBuilder {
     parse_reasoning_content: bool,
     tolerant_keepalive: bool,
     thinking_scheme: ThinkingScheme,
+    max_tokens_scheme: MaxTokensScheme,
     capabilities: crate::provider::ProviderCapabilities,
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
@@ -162,6 +174,7 @@ impl OpenAIProvider {
             parse_reasoning_content: false,
             tolerant_keepalive: false,
             thinking_scheme: ThinkingScheme::None,
+            max_tokens_scheme: MaxTokensScheme::MaxTokens,
             capabilities: crate::provider::ProviderCapabilities {
                 images: true,
                 reasoning: true,
@@ -298,6 +311,7 @@ impl OpenAIProvider {
             &req.base,
             Some(&req.ext),
             self.thinking_scheme,
+            self.max_tokens_scheme,
             false,
             self.capabilities.documents_inline,
         )?;
@@ -317,6 +331,7 @@ impl OpenAIProvider {
             &req.base,
             Some(&req.ext),
             self.thinking_scheme,
+            self.max_tokens_scheme,
             true,
             self.capabilities.documents_inline,
         )?;
@@ -534,6 +549,12 @@ impl OpenAIProviderBuilder {
         self
     }
 
+    /// Choose the Chat Completions token-limit field. Defaults to `max_tokens`.
+    pub fn max_tokens_scheme(mut self, scheme: MaxTokensScheme) -> Self {
+        self.max_tokens_scheme = scheme;
+        self
+    }
+
     /// Connect-phase timeout (DNS + TCP + TLS). Default 30s.
     ///
     /// Native only: ignored on `wasm32` (reqwest's wasm backend has no
@@ -597,6 +618,7 @@ impl OpenAIProviderBuilder {
             responses_path: self.responses_path,
             responses_input_tokens_path: self.responses_input_tokens_path,
             thinking_scheme: self.thinking_scheme,
+            max_tokens_scheme: self.max_tokens_scheme,
             parse_reasoning_content: self.parse_reasoning_content,
             tolerant_keepalive: self.tolerant_keepalive,
             capabilities: self.capabilities,
