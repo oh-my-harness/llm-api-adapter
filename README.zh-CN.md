@@ -1,5 +1,7 @@
 # llm_adapter
 
+> **V0.1.1 接入**：[模型请求传输说明](docs/v0-runtime-transport.md) 记录固定版本、URL、代理与 CA 行为。首次启动 V0 请走 Senza Studio 快速开始，不要把下方库示例当作团队配置步骤。
+
 *[English](README.md)*
 
 一个 Rust 编写的 LLM provider 适配层：把多家 provider（OpenAI Chat Completions、Anthropic Messages、DeepSeek、以及任何 OpenAI 兼容的 endpoint）的 wire 格式归一化到统一的 canonical 类型系统，原生支持流式、tool calling，并为 provider 特有功能保留独立的扩展通道。

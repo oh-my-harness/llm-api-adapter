@@ -1,5 +1,7 @@
 # llm_adapter
 
+> **V0.1.1 接入**：[模型请求传输说明](docs/v0-runtime-transport.md) 记录固定版本、URL 规则、代理及 CA 行为。首次使用 V0 请从 Senza Studio 快速开始进入。
+
 *[中文版](README.zh-CN.md)*
 
 A Rust adapter layer that normalises the wire formats of multiple LLM
