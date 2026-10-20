@@ -110,3 +110,16 @@ pub fn load_dotenv() {
 pub fn opt_env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
+
+/// Mount a mock that replies to POST /v1/embeddings with an HTTP error status.
+#[allow(dead_code)]
+pub async fn mock_embeddings_error(server: &MockServer, status: u16) {
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .respond_with(
+            ResponseTemplate::new(status)
+                .set_body_raw(r#"{"error":{"message":"probe"}}"#, "application/json"),
+        )
+        .mount(server)
+        .await;
+}
