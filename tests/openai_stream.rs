@@ -447,3 +447,65 @@ async fn stream_progressive_usage_does_not_terminate_early() {
     assert_eq!(resp.usage.output_tokens, 46);
     assert_eq!(resp.usage.reasoning_tokens, 43);
 }
+
+/// 5xx gateway failures reach the same `send()` error mapping before any
+/// SSE bytes are consumed; they must surface as `ServerError` so callers
+/// never treat them as repairable `InvalidRequest`.
+#[tokio::test]
+async fn stream_error_statuses_classify_as_server_error() {
+    for status in [504u16, 520u16, 599u16] {
+        let server = MockServer::start().await;
+        common::mock_error(&server, status, r#"{"error":{"message":"probe"}}"#).await;
+
+        let req = ChatRequest::builder("gpt-4o", 512)
+            .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+            .build();
+
+        let err = match provider(&server).chat_stream(&req).await {
+            Err(err) => err,
+            Ok(_) => panic!("stream must fail on HTTP {status}"),
+        };
+        assert!(
+            matches!(err, LlmError::ServerError(_)),
+            "HTTP {status} must classify as ServerError on the streaming path, got {err:?}",
+            status = status,
+            err = err
+        );
+    }
+}
+
+/// chat_stream 的错误响应与 chat 共用 `send()` 的状态映射：未知结局的 5xx
+/// 必须归为 `ServerError`，不能以 `InvalidRequest` 形式进入修复重试。
+#[tokio::test]
+async fn stream_error_statuses_match_chat_classification() {
+    for (status, expect_server_error) in [
+        (400u16, false),
+        (502, true),
+        (504, true),
+        (520, true),
+        (599, true),
+    ] {
+        let server = MockServer::start().await;
+        common::mock_error(&server, status, r#"{"error":{"message":"probe"}}"#).await;
+
+        let req = ChatRequest::builder("gpt-4o", 512)
+            .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+            .build();
+
+        let err = match provider(&server).chat_stream(&req).await {
+            Err(err) => err,
+            Ok(_) => panic!("stream must fail on HTTP {status}"),
+        };
+        if expect_server_error {
+            assert!(
+                matches!(err, LlmError::ServerError(_)),
+                "HTTP {status}: {err:?}"
+            );
+        } else {
+            assert!(
+                matches!(err, LlmError::InvalidRequest(_)),
+                "HTTP {status}: {err:?}"
+            );
+        }
+    }
+}

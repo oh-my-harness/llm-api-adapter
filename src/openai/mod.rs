@@ -183,8 +183,13 @@ impl OpenAIProvider {
                     })
                 }
                 429 => Err(LlmError::RateLimit { retry_after }),
-                500 | 502 | 503 => Err(LlmError::ServerError(error_text)),
+                // 408 is a request timeout with an unknown upstream outcome;
+                // it must not surface as InvalidRequest (repairable) — see
+                // the sibling 5xx guard below.
+                408 => Err(LlmError::Timeout),
+                500 | 502 | 503 | 504 => Err(LlmError::ServerError(error_text)),
                 529 => Err(LlmError::Overloaded { retry_after }),
+                status if status >= 500 => Err(LlmError::ServerError(error_text)),
                 _ => Err(LlmError::InvalidRequest(error_text)),
             };
         }
@@ -232,8 +237,13 @@ impl OpenAIProvider {
                     message: error_text,
                 }),
                 429 => Err(LlmError::RateLimit { retry_after }),
-                500 | 502 | 503 => Err(LlmError::ServerError(error_text)),
+                // 408 is a request timeout with an unknown upstream outcome;
+                // it must not surface as InvalidRequest (repairable) — see
+                // the sibling 5xx guard below.
+                408 => Err(LlmError::Timeout),
+                500 | 502 | 503 | 504 => Err(LlmError::ServerError(error_text)),
                 529 => Err(LlmError::Overloaded { retry_after }),
+                status if status >= 500 => Err(LlmError::ServerError(error_text)),
                 _ => Err(LlmError::InvalidRequest(error_text)),
             };
         }
