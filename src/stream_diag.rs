@@ -126,6 +126,8 @@ fn classify_reqwest_error(err: &reqwest::Error) -> String {
     if err.is_timeout() {
         flags.push("timeout");
     }
+    // reqwest gates `is_connect` to non-wasm targets.
+    #[cfg(not(target_arch = "wasm32"))]
     if err.is_connect() {
         flags.push("connect");
     }
