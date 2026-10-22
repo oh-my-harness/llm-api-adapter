@@ -177,6 +177,8 @@ impl StreamHandle {
             return Err(LlmError::StreamIncomplete {
                 received_chunks,
                 finish_reason: None,
+                kind: crate::StreamEndKind::EofWithoutDone,
+                detail: Some("layer=stream_handle_collect saw_stop=false".into()),
             });
         }
 

@@ -1,5 +1,7 @@
 use super::schema::{OaiChunk, OaiDelta};
 use crate::LlmError;
+use crate::StreamEndKind;
+use crate::stream_diag::{ResponseMeta, classify_event_stream_error};
 use crate::stream_handle::{BoxStream, box_stream};
 use crate::types::{ContentKind, StopReason, StreamEvent};
 use std::collections::HashMap;
@@ -241,6 +243,7 @@ pub fn parse_stream(
     use eventsource_stream::Eventsource;
     use futures::stream::{StreamExt, once};
 
+    let meta = ResponseMeta::capture(&response);
     let stream = response.bytes_stream();
     let event_stream = stream.eventsource();
 
@@ -256,6 +259,7 @@ pub fn parse_stream(
                 let chunk_count = chunk_count.clone();
                 let finish_reason_seen = finish_reason_seen.clone();
                 let stop_received = stop_received.clone();
+                let meta = meta.clone();
                 move |event_result| {
                     let mut results = Vec::new();
 
@@ -278,6 +282,11 @@ pub fn parse_stream(
                                         results.push(Err(LlmError::StreamIncomplete {
                                             received_chunks: chunk_count.load(Ordering::SeqCst),
                                             finish_reason: None,
+                                            kind: StreamEndKind::DoneWithoutFinishReason,
+                                            detail: Some(format!(
+                                                "{} saw_done=true usage=absent",
+                                                meta.prefix()
+                                            )),
                                         }));
                                         state.message_stop_sent = true;
                                         stop_received.store(true, Ordering::SeqCst);
@@ -309,7 +318,7 @@ pub fn parse_stream(
                             match serde_json::from_str::<OaiChunk>(&event.data) {
                                 Ok(chunk) => {
                                     let events = process_chunk(&mut state, chunk, parse_reasoning);
-                                    if let Some(ref fr) = state.pending_stop {
+                                    if let Some(fr) = &state.pending_stop {
                                         *finish_reason_seen.lock().unwrap() = Some(fr.clone());
                                     }
                                     results = events;
@@ -329,16 +338,22 @@ pub fn parse_stream(
                             // Err, so the `.chain(once(...))` tail below would
                             // never be polled — emit StreamIncomplete here to
                             // preserve received_chunks/finish_reason for callers
-                            // matching on that variant. The underlying transport
-                            // error is logged for diagnostics.
+                            // matching on that variant. Classify the error now:
+                            // persisted Display text must distinguish upstream
+                            // protocol omissions from transport failures.
+                            let (kind, cause) = classify_event_stream_error(&e);
+                            let detail = format!("{} {}", meta.prefix(), cause);
                             tracing::warn!(
-                                error = %e,
+                                kind = %kind,
+                                detail = %detail,
                                 received_chunks = chunk_count.load(Ordering::SeqCst),
                                 "SSE stream errored mid-flight; reporting StreamIncomplete"
                             );
                             results.push(Err(LlmError::StreamIncomplete {
                                 received_chunks: chunk_count.load(Ordering::SeqCst),
                                 finish_reason: finish_reason_seen.lock().unwrap().clone(),
+                                kind,
+                                detail: Some(detail),
                             }));
                             stop_received.store(true, Ordering::SeqCst);
                         }
@@ -363,6 +378,8 @@ pub fn parse_stream(
                         Some(Err(LlmError::StreamIncomplete {
                             received_chunks: chunk_count.load(Ordering::SeqCst),
                             finish_reason: finish_reason_seen.lock().unwrap().clone(),
+                            kind: StreamEndKind::EofWithoutDone,
+                            detail: Some(format!("{} saw_done=false", meta.prefix())),
                         }))
                     }
                 })

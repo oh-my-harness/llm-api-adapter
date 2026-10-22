@@ -186,6 +186,7 @@ async fn anthropic_stream_dropped_mid_stream_returns_error() {
         LlmError::StreamIncomplete {
             received_chunks,
             finish_reason,
+            ..
         } => {
             assert!(received_chunks > 0, "received_chunks should be > 0");
             assert!(finish_reason.is_none(), "finish_reason must be None");
@@ -220,6 +221,7 @@ async fn anthropic_stream_dropped_after_message_delta_surfaces_finish_reason() {
         LlmError::StreamIncomplete {
             received_chunks,
             finish_reason,
+            ..
         } => {
             assert!(
                 received_chunks > 0,

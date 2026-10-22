@@ -237,6 +237,7 @@ pub fn parse_stream(response: reqwest::Response) -> BoxStream {
     use eventsource_stream::Eventsource;
     use futures::stream::{StreamExt, once};
 
+    let meta = crate::stream_diag::ResponseMeta::capture(&response);
     let stream = response.bytes_stream();
     let event_stream = stream.eventsource();
 
@@ -252,6 +253,7 @@ pub fn parse_stream(response: reqwest::Response) -> BoxStream {
                 let chunk_count = chunk_count.clone();
                 let finish_reason_seen = finish_reason_seen.clone();
                 let stop_received = stop_received.clone();
+                let meta = meta.clone();
                 move |event_result| {
                     let mut results = Vec::new();
 
@@ -262,7 +264,7 @@ pub fn parse_stream(response: reqwest::Response) -> BoxStream {
                             match serde_json::from_str::<AnthropicStreamEvent>(&event.data) {
                                 Ok(stream_event) => {
                                     let events = process_event(&mut state, stream_event);
-                                    if let Some(ref sr) = state.pending_stop_reason {
+                                    if let Some(sr) = &state.pending_stop_reason {
                                         *finish_reason_seen.lock().unwrap() = Some(sr.clone());
                                     }
                                     results = events;
@@ -277,14 +279,19 @@ pub fn parse_stream(response: reqwest::Response) -> BoxStream {
                             // surface as StreamIncomplete, not LlmError::Stream —
                             // `collect` short-circuits on the first Err so the
                             // `.chain(once(...))` tail would never be polled.
+                            let (kind, cause) = crate::stream_diag::classify_event_stream_error(&e);
+                            let detail = format!("{} {}", meta.prefix(), cause);
                             tracing::warn!(
-                                error = %e,
+                                kind = %kind,
+                                detail = %detail,
                                 received_chunks = chunk_count.load(Ordering::SeqCst),
                                 "SSE stream errored mid-flight; reporting StreamIncomplete"
                             );
                             results.push(Err(LlmError::StreamIncomplete {
                                 received_chunks: chunk_count.load(Ordering::SeqCst),
                                 finish_reason: finish_reason_seen.lock().unwrap().clone(),
+                                kind,
+                                detail: Some(detail),
                             }));
                             stop_received.store(true, Ordering::SeqCst);
                         }
@@ -309,6 +316,8 @@ pub fn parse_stream(response: reqwest::Response) -> BoxStream {
                         Some(Err(LlmError::StreamIncomplete {
                             received_chunks: chunk_count.load(Ordering::SeqCst),
                             finish_reason: finish_reason_seen.lock().unwrap().clone(),
+                            kind: crate::StreamEndKind::EofWithoutDone,
+                            detail: Some(format!("{} saw_done=false", meta.prefix())),
                         }))
                     }
                 })

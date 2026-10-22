@@ -271,6 +271,7 @@ async fn stream_done_without_finish_reason_or_usage_returns_error() {
         LlmError::StreamIncomplete {
             received_chunks,
             finish_reason,
+            ..
         } => {
             assert!(
                 received_chunks > 0,
@@ -305,6 +306,7 @@ async fn stream_dropped_mid_stream_returns_error() {
         LlmError::StreamIncomplete {
             received_chunks,
             finish_reason,
+            ..
         } => {
             assert!(received_chunks > 0, "received_chunks should be > 0");
             assert!(finish_reason.is_none(), "finish_reason must be None");
@@ -354,6 +356,8 @@ async fn stream_handle_collect_surfaces_stream_incomplete_on_err() {
         Err(LlmError::StreamIncomplete {
             received_chunks: 2,
             finish_reason: None,
+            kind: llm_adapter::StreamEndKind::TransportError,
+            detail: Some("cause=transport flags=[decode]".into()),
         }),
     ];
 
@@ -366,6 +370,7 @@ async fn stream_handle_collect_surfaces_stream_incomplete_on_err() {
         LlmError::StreamIncomplete {
             received_chunks,
             finish_reason,
+            ..
         } => {
             assert_eq!(
                 received_chunks, 2,
