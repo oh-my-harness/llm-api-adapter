@@ -70,6 +70,10 @@ pub struct OpenAIProvider {
     client: reqwest::Client,
     responses_client: reqwest::Client,
     responses_transport_profile: responses::OpenAIResponsesTransportProfile,
+    /// Why the strict Responses transport is unavailable. `Some` disables
+    /// Responses calls while Chat/Embeddings keep working, and is set for
+    /// wasm32 (unsupported) or an invalid Responses-only timeout profile.
+    responses_transport_error: Option<String>,
     api_key: String,
     base_url: String,
     chat_path: String,
@@ -142,7 +146,7 @@ fn http_client_builder(
 fn strict_responses_client_builder(
     profile: &responses::OpenAIResponsesTransportProfile,
 ) -> reqwest::ClientBuilder {
-    http_client_builder(
+    let builder = http_client_builder(
         profile
             .connect_timeout()
             .as_duration()
@@ -156,9 +160,22 @@ fn strict_responses_client_builder(
                 .as_duration()
                 .expect("validated Responses request timeout")
         }),
-    )
-    .redirect(reqwest::redirect::Policy::none())
-    .retry(reqwest::retry::never())
+    );
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Strict Responses semantics: no redirects, no implicit retries.
+        builder
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // These builder methods do not exist on the wasm client. Responses
+        // execution is rejected before this client is used on wasm32 (see
+        // `responses_transport_error`), so this must never silently weaken
+        // the documented strict transport semantics.
+        builder
+    }
 }
 
 impl OpenAIProvider {
@@ -606,13 +623,27 @@ impl OpenAIProviderBuilder {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
         let read_timeout = self.read_timeout.unwrap_or(Duration::from_secs(60));
         let request_timeout = self.request_timeout;
-        let responses_transport_profile = responses::OpenAIResponsesTransportProfile::strict(
-            connect_timeout,
-            read_timeout,
-            request_timeout,
-            self.responses_resource_limits,
-        )
-        .expect("invalid strict Responses transport profile");
+        let (responses_transport_profile, responses_transport_error) =
+            match responses::OpenAIResponsesTransportProfile::strict(
+                connect_timeout,
+                read_timeout,
+                request_timeout,
+                self.responses_resource_limits,
+            ) {
+                Ok(profile) => (profile, None),
+                // A zero Responses timeout must not panic provider construction:
+                // Chat/Embeddings do not use this profile. Responses calls are
+                // rejected with this error instead.
+                Err(error) => (
+                    responses::OpenAIResponsesTransportProfile::default_strict(),
+                    Some(format!("invalid Responses transport profile: {error}")),
+                ),
+            };
+        #[cfg(target_arch = "wasm32")]
+        let responses_transport_error = {
+            let _ = responses_transport_error;
+            Some("Responses transport is not supported on wasm32".to_string())
+        };
         OpenAIProvider {
             client: http_client_builder(connect_timeout, read_timeout, request_timeout)
                 .build()
@@ -621,6 +652,7 @@ impl OpenAIProviderBuilder {
                 .build()
                 .expect("failed to build strict Responses HTTP client"),
             responses_transport_profile,
+            responses_transport_error,
             api_key: self.api_key,
             base_url: self.base_url,
             chat_path: self.chat_path,
@@ -676,7 +708,7 @@ impl EmbeddingProvider for OpenAIProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::strict_responses_client_builder;
+    use super::{OpenAIProvider, strict_responses_client_builder};
     use crate::openai::responses::{
         OpenAIResponsesResourceLimits, OpenAIResponsesTransportProfile,
     };
@@ -751,5 +783,37 @@ mod tests {
         );
         server.abort();
         let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn zero_timeouts_do_not_panic_and_chat_embedding_stay_typed() {
+        use crate::{
+            ChatRequest, EmbeddingProvider, EmbeddingRequest, Message, Provider, RequestContent,
+        };
+
+        let provider = OpenAIProvider::builder("test-key")
+            .base_url("http://127.0.0.1:9")
+            .connect_timeout(Duration::ZERO)
+            .read_timeout(Duration::ZERO)
+            .request_timeout(Duration::ZERO)
+            .build();
+        let reason = provider
+            .responses_transport_error()
+            .expect("zero Responses timeouts must disable Responses, not panic");
+        assert!(reason.contains("Responses"), "{reason}");
+
+        let chat = ChatRequest::builder("test-model", 16)
+            .message(Message::User(vec![RequestContent::Text("hi".into())]))
+            .build();
+        assert!(
+            provider.chat(&chat).await.is_err(),
+            "the Chat path must return a typed error instead of panicking"
+        );
+
+        let embed = EmbeddingRequest::builder("test-embed").input("hi").build();
+        assert!(
+            provider.embed(&embed).await.is_err(),
+            "the Embedding path must return a typed error instead of panicking"
+        );
     }
 }

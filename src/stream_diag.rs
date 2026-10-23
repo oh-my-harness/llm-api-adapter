@@ -109,13 +109,17 @@ pub(crate) fn classify_event_stream_error(
             StreamEndKind::TransportError,
             format!("cause=transport {}", classify_reqwest_error(err)),
         ),
-        EventStreamError::Utf8(err) => (
+        EventStreamError::Utf8(_) => (
             StreamEndKind::DecodeError,
-            format!("cause=utf8 {}", sanitize_detail(&err.to_string())),
+            // The UTF-8 error's Display is a position/length summary, but the
+            // body is never included. Keep only the structured category.
+            "cause=utf8".into(),
         ),
-        EventStreamError::Parser(err) => (
+        EventStreamError::Parser(_) => (
             StreamEndKind::DecodeError,
-            format!("cause=sse_parser {}", sanitize_detail(&err.to_string())),
+            // `nom::Error<String>` Display can embed the unparsed SSE input
+            // (response bytes). Never render it: category only.
+            "cause=sse_parser".into(),
         ),
     }
 }
@@ -160,36 +164,107 @@ fn classify_reqwest_error(err: &reqwest::Error) -> String {
     out
 }
 
-/// Trim, redact URLs/bearer tokens and cap the length.
+/// Trim, redact URLs/credentials and cap the length.
+///
+/// Redaction is intentionally aggressive and format-tolerant:
+/// * `http(s)://` is matched anywhere (including inside `(...)` or quotes) and
+///   everything up to a structural delimiter is dropped.
+/// * `Authorization` / `Bearer` / `sk-…` values are dropped, including when
+///   wrapped in punctuation.
+///
+/// Only error-chain text reaches this function; prompts and response bodies
+/// are never passed here (SSE parser input is excluded before sanitization).
 pub(crate) fn sanitize_detail(input: &str) -> String {
+    let redacted_urls = redact_urls(input);
     let mut out = String::new();
     let mut redact_next = false;
-    for token in input.split_whitespace() {
-        let lower = token.to_ascii_lowercase();
-        let rendered = if lower.starts_with("http://")
-            || lower.starts_with("https://")
-            || lower.starts_with("bearer")
+    for token in redacted_urls.split_whitespace() {
+        let (lead, core, trail) = split_token_edges(token);
+        let lower = core.to_ascii_lowercase();
+        let rendered_core = if redact_next {
+            if lower == "bearer" || lower.starts_with("bearer=") || lower.starts_with("bearer:") {
+                // Keep the flag armed: `authorization: Bearer <secret>` must
+                // redact the token after the scheme word too.
+                "<redacted>"
+            } else {
+                redact_next = false;
+                "<redacted>"
+            }
+        } else if lower == "bearer"
+            || lower.starts_with("bearer=")
+            || lower.starts_with("bearer:")
             || lower.starts_with("sk-")
         {
-            "<redacted>"
-        } else if redact_next {
-            redact_next = false;
             "<redacted>"
         } else {
             if lower == "authorization:" || lower == "authorization" {
                 redact_next = true;
             }
-            token
+            core
         };
         if !out.is_empty() {
             out.push(' ');
         }
-        out.extend(rendered.chars().filter(|c| !c.is_control()));
+        out.push_str(lead);
+        out.extend(rendered_core.chars().filter(|c| !c.is_control()));
+        out.push_str(trail);
         if out.chars().count() >= MAX_DETAIL_LEN {
             break;
         }
     }
     truncate_chars(&mut out, MAX_DETAIL_LEN)
+}
+
+/// Replace every `http(s)://…` run up to a structural delimiter.
+fn redact_urls(input: &str) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < input.len() {
+        let rest = &input[i..];
+        let bytes = rest.as_bytes();
+        let scheme_len = if bytes.len() >= 8 && bytes[..8].eq_ignore_ascii_case(b"https://") {
+            8
+        } else if bytes.len() >= 7 && bytes[..7].eq_ignore_ascii_case(b"http://") {
+            7
+        } else {
+            0
+        };
+        if scheme_len > 0 {
+            out.push_str("<redacted-url>");
+            i += scheme_len;
+            while i < input.len() {
+                let c = input[i..].chars().next().expect("char boundary");
+                if c.is_whitespace() || matches!(c, ')' | ']' | '}' | '"' | '\'' | ',' | ';') {
+                    break;
+                }
+                i += c.len_utf8();
+            }
+        } else {
+            let c = rest.chars().next().expect("char boundary");
+            out.push(c);
+            i += c.len_utf8();
+        }
+    }
+    out
+}
+
+/// Split leading/trailing punctuation so `(sk-…),` is recognized as `sk-…`.
+fn split_token_edges(token: &str) -> (&str, &str, &str) {
+    let chars: Vec<(usize, char)> = token.char_indices().collect();
+    let is_lead = |c: char| matches!(c, '(' | '[' | '{' | '"' | '\'' | '<');
+    let is_trail = |c: char| matches!(c, ')' | ']' | '}' | '"' | '\'' | ',' | ';' | '>' | '.');
+    let start_pos = chars
+        .iter()
+        .position(|(_, c)| !is_lead(*c))
+        .unwrap_or(chars.len());
+    let end_pos = chars
+        .iter()
+        .rposition(|(_, c)| !is_trail(*c))
+        .map(|pos| pos + 1)
+        .unwrap_or(start_pos);
+    let start = chars.get(start_pos).map(|(i, _)| *i).unwrap_or(token.len());
+    let end = chars.get(end_pos).map(|(i, _)| *i).unwrap_or(token.len());
+    (&token[..start], &token[start..end], &token[end..])
 }
 
 fn sanitize_header_value(value: &str, max: usize) -> String {
@@ -236,6 +311,49 @@ mod tests {
         assert!(!clean.contains("secret"));
         assert!(!clean.contains("sk-abc123"));
         assert!(!clean.contains("xyz"));
+    }
+
+    #[test]
+    fn sanitize_redacts_urls_wrapped_in_punctuation() {
+        let raw = "error sending request for url (https://api.example.com/v1/chat?api_key=SECRET_VALUE&x=1), retry";
+        let clean = sanitize_detail(raw);
+        assert!(!clean.contains("SECRET_VALUE"), "{clean}");
+        assert!(!clean.contains("api.example.com"), "{clean}");
+        assert!(clean.contains("<redacted-url>"), "{clean}");
+        assert!(
+            clean.contains("),"),
+            "structural punctuation is kept: {clean}"
+        );
+    }
+
+    #[test]
+    fn sanitize_redacts_punctuated_credentials() {
+        let raw = "authorization: (Bearer TOKEN_123), sk-SECRET_KEY; Bearer=OTHER";
+        let clean = sanitize_detail(raw);
+        for leaked in ["TOKEN_123", "SECRET_KEY", "OTHER"] {
+            assert!(!clean.contains(leaked), "{leaked} leaked: {clean}");
+        }
+    }
+
+    #[test]
+    fn parser_and_utf8_details_never_include_payload() {
+        use eventsource_stream::EventStreamError;
+        use nom::error::{Error as NomError, ErrorKind};
+
+        let parser: EventStreamError<reqwest::Error> = EventStreamError::Parser(NomError::new(
+            "SECRET_RESPONSE_BODY".to_string(),
+            ErrorKind::Tag,
+        ));
+        let (kind, detail) = classify_event_stream_error(&parser);
+        assert_eq!(kind, StreamEndKind::DecodeError);
+        assert_eq!(detail, "cause=sse_parser");
+        assert!(!detail.contains("SECRET_RESPONSE_BODY"));
+
+        let utf8 = String::from_utf8(vec![0xff]).expect_err("invalid utf8");
+        let utf8: EventStreamError<reqwest::Error> = EventStreamError::Utf8(utf8);
+        let (kind, detail) = classify_event_stream_error(&utf8);
+        assert_eq!(kind, StreamEndKind::DecodeError);
+        assert_eq!(detail, "cause=utf8");
     }
 
     #[test]

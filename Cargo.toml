@@ -26,6 +26,7 @@ web-time = "1"
 bytes = "1"
 h2 = "0.4"
 http = "1"
+nom = "7"
 reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "stream", "rustls-tls"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "io-util", "time"] }
 wiremock = "0.6"

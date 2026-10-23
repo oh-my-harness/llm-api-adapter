@@ -1430,9 +1430,9 @@ impl OpenAIResponsesFailure {
 #[derive(Debug, thiserror::Error)]
 pub enum OpenAIResponsesError {
     #[error("invalid prepared Responses call: {0}")]
-    InvalidPreparedCall(#[source] OpenAIResponsesFailure),
+    InvalidPreparedCall(#[source] Box<OpenAIResponsesFailure>),
     #[error("Responses request failed: {0}")]
-    Request(#[source] OpenAIResponsesFailure),
+    Request(#[source] Box<OpenAIResponsesFailure>),
 }
 
 impl OpenAIResponsesError {
@@ -1699,6 +1699,9 @@ impl OpenAIProvider {
         projection: OpenAIResponsesTokenProjection,
         controls: OpenAIResponsesResponseControls,
     ) -> Result<PreparedOpenAIResponse, OpenAIResponsesBuildError> {
+        if let Some(reason) = &self.responses_transport_error {
+            return Err(OpenAIResponsesBuildError::new(reason.clone()));
+        }
         PreparedOpenAIResponse::new_with_transport_profile(
             projection,
             controls,
@@ -1706,8 +1709,21 @@ impl OpenAIProvider {
         )
     }
 
+    /// The strict profile used when Responses transport is available.
+    ///
+    /// When [`responses_transport_error`](Self::responses_transport_error)
+    /// returns `Some`, Responses execution is rejected regardless of this
+    /// value (which then remains the canonical default profile).
     pub fn responses_transport_profile(&self) -> &OpenAIResponsesTransportProfile {
         &self.responses_transport_profile
+    }
+
+    /// Why the strict Responses transport is unavailable, if it is.
+    ///
+    /// `Some` means Responses calls are rejected before any HTTP request.
+    /// Chat Completions and Embeddings are unaffected.
+    pub fn responses_transport_error(&self) -> Option<&str> {
+        self.responses_transport_error.as_deref()
     }
 
     fn validate_prepared_response(
@@ -1734,6 +1750,9 @@ impl OpenAIProvider {
     ) -> Result<OpenAIResponseInputTokenCount, OpenAIResponsesError> {
         let endpoint = self.responses_input_tokens_path.clone();
         let mut attempt = self.attempt_receipt(prepared, endpoint.clone(), false);
+        if let Some(reason) = &self.responses_transport_error {
+            return Err(invalid_prepared_failure(reason.clone(), attempt));
+        }
         self.validate_prepared_response(prepared)
             .map_err(|error| invalid_prepared_failure(error.to_string(), attempt.clone()))?;
         let body = prepared
@@ -1841,6 +1860,9 @@ impl OpenAIProvider {
     ) -> Result<OpenAIResponseResult, OpenAIResponsesError> {
         let endpoint = self.responses_path.clone();
         let mut attempt = self.attempt_receipt(prepared, endpoint.clone(), true);
+        if let Some(reason) = &self.responses_transport_error {
+            return Err(invalid_prepared_failure(reason.clone(), attempt));
+        }
         self.validate_prepared_response(prepared)
             .map_err(|error| invalid_prepared_failure(error.to_string(), attempt.clone()))?;
         let body = prepared
@@ -2008,11 +2030,11 @@ fn invalid_prepared_failure(
     message: String,
     attempt: OpenAIResponsesAttemptReceipt,
 ) -> OpenAIResponsesError {
-    OpenAIResponsesError::InvalidPreparedCall(OpenAIResponsesFailure {
+    OpenAIResponsesError::InvalidPreparedCall(Box::new(OpenAIResponsesFailure {
         message,
         source: LlmError::InvalidRequest("prepared Responses call failed validation".into()),
         attempt,
-    })
+    }))
 }
 
 fn request_failure(
@@ -2020,11 +2042,11 @@ fn request_failure(
     source: LlmError,
     attempt: OpenAIResponsesAttemptReceipt,
 ) -> OpenAIResponsesError {
-    OpenAIResponsesError::Request(OpenAIResponsesFailure {
+    OpenAIResponsesError::Request(Box::new(OpenAIResponsesFailure {
         message: message.into(),
         source,
         attempt,
-    })
+    }))
 }
 
 #[derive(Debug, thiserror::Error)]
