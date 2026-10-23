@@ -42,8 +42,9 @@ where
 ///   empty when collected from streaming — use
 ///   [`crate::provider::Provider::chat`] if you need them).
 ///
-/// On `wasm32` the underlying stream is `!Send` (see [`Provider`]'s wasm
-/// note); consume the handle on the JS task that created it.
+/// On `wasm32` the underlying stream is `!Send` (see
+/// [`Provider`](crate::provider::Provider)'s wasm note); consume the handle on
+/// the JS task that created it.
 pub struct StreamHandle {
     pub(crate) id: String,
     pub(crate) model: String,
