@@ -15,10 +15,26 @@
 //! * `decode_error` — the bytes were not valid UTF-8 or valid SSE frames.
 //!
 //! No request headers, prompts, response bodies or API keys are copied into
-//! the detail: only error-chain text, HTTP status, content type and a
-//! whitelisted request-id header are retained, with URLs redacted.
+//! the detail: only error-chain text, HTTP status, content type, a whitelisted
+//! request-id header and numeric timing fields are retained, with URLs
+//! redacted.
+//!
+//! Timing is measured at the byte level, where the body is read:
+//! `elapsed_ms` counts from the start of the HTTP request (including waiting
+//! for the response headers), `last_read_ms` is the offset of the last
+//! successfully read body chunk and `idle_body_ms` is `elapsed_ms -
+//! last_read_ms`. `idle_body_ms` is only rendered when at least one body byte
+//! was actually read; a zero-byte body reports `last_read_ms=none
+//! idle_body_ms=unavailable` instead of mis-attributing the header wait to
+//! body idleness. All three fields degrade to `unavailable`/`none` once the
+//! millisecond clock saturates, rather than printing a truncated (and thus
+//! misleadingly growing) idle value. `read_timeout_ms` is the effective client
+//! read timeout, so an operator can tell a timeout from an upstream stall
+//! without consulting configuration; it is omitted entirely on platforms where
+//! the client does not implement a read timeout (wasm).
 
 use std::fmt;
+use std::time::Duration;
 
 use eventsource_stream::EventStreamError;
 
@@ -63,10 +79,27 @@ pub(crate) struct ResponseMeta {
     status: u16,
     content_type: Option<String>,
     request_id: Option<String>,
+    read_timeout_ms: Option<u64>,
 }
 
 impl ResponseMeta {
     pub(crate) fn capture(response: &reqwest::Response) -> Self {
+        Self::capture_with_read_timeout(response, None)
+    }
+
+    /// Capture response metadata plus the effective client read timeout.
+    ///
+    /// The read timeout bounds *idle time between body reads*, not total
+    /// generation time, so persisting it next to the measured idle gap lets an
+    /// operator decide whether the failure matched the configured limit.
+    ///
+    /// `None` means the timeout is not implemented by the HTTP client on this
+    /// platform (wasm); the field is then omitted from [`Self::prefix`] rather
+    /// than reported as an effective value that never applies.
+    pub(crate) fn capture_with_read_timeout(
+        response: &reqwest::Response,
+        read_timeout: Option<Duration>,
+    ) -> Self {
         let headers = response.headers();
         let content_type = headers
             .get(reqwest::header::CONTENT_TYPE)
@@ -82,6 +115,7 @@ impl ResponseMeta {
             status: response.status().as_u16(),
             content_type,
             request_id,
+            read_timeout_ms: read_timeout.map(|d| d.as_millis() as u64),
         }
     }
 
@@ -96,8 +130,41 @@ impl ResponseMeta {
             out.push_str(" rid=");
             out.push_str(rid);
         }
+        if let Some(timeout_ms) = self.read_timeout_ms {
+            out.push_str(" read_timeout_ms=");
+            out.push_str(&timeout_ms.to_string());
+        }
         out
     }
+}
+
+/// Render byte-level body-read timing as a compact `k=v` fragment.
+///
+/// * `elapsed_ms` — `None` means the millisecond clock saturated; the whole
+///   timing triple is then reported as unavailable.
+/// * `last_read_ms` — `None` means no body byte was ever read.
+/// * `idle_body_ms` — only meaningful after a body read; when no byte was read
+///   it is `None` and rendered as `unavailable`, never as the elapsed time.
+pub(crate) fn timing_detail(
+    elapsed_ms: Option<u64>,
+    last_read_ms: Option<u64>,
+    idle_body_ms: Option<u64>,
+) -> String {
+    let (elapsed, last, idle) = match (elapsed_ms, last_read_ms, idle_body_ms) {
+        (Some(elapsed), Some(last), Some(idle)) => {
+            (elapsed.to_string(), last.to_string(), idle.to_string())
+        }
+        (Some(elapsed), _, _) => (
+            elapsed.to_string(),
+            last_read_ms
+                .map(|last| last.to_string())
+                .unwrap_or_else(|| "none".into()),
+            "unavailable".into(),
+        ),
+        // Saturated clock: nothing about the timing is trustworthy.
+        (None, _, _) => ("unavailable".into(), "none".into(), "unavailable".into()),
+    };
+    format!("elapsed_ms={elapsed} last_read_ms={last} idle_body_ms={idle}")
 }
 
 /// Classify an `eventsource-stream` error without leaking payload bytes.
@@ -138,7 +205,12 @@ fn classify_reqwest_error(err: &reqwest::Error) -> String {
     if err.is_body() {
         flags.push("body");
     }
-    if err.is_decode() {
+    // reqwest wraps a body read timeout as a decode-class error
+    // ("error decoding response body: ... operation timed out"). Labelling
+    // that as `decode` makes every timeout look like a malformed payload, so
+    // the redundant flag is dropped once the cause is already a timeout.
+    // Genuine decode failures (timeout == false) keep the flag.
+    if err.is_decode() && !err.is_timeout() {
         flags.push("decode");
     }
     if err.is_request() {
@@ -362,5 +434,50 @@ mod tests {
         let clean = sanitize_detail(&raw);
         assert!(clean.chars().count() <= MAX_DETAIL_LEN);
         assert!(clean.ends_with("..."));
+    }
+
+    #[test]
+    fn timing_detail_never_invents_body_idle_without_a_read() {
+        assert_eq!(
+            timing_detail(Some(150), None, None),
+            "elapsed_ms=150 last_read_ms=none idle_body_ms=unavailable"
+        );
+        assert_eq!(
+            timing_detail(Some(150), Some(120), Some(30)),
+            "elapsed_ms=150 last_read_ms=120 idle_body_ms=30"
+        );
+    }
+
+    #[test]
+    fn timing_detail_marks_a_saturated_clock_as_unavailable() {
+        let detail = timing_detail(None, None, None);
+        assert_eq!(
+            detail,
+            "elapsed_ms=unavailable last_read_ms=none idle_body_ms=unavailable"
+        );
+        assert!(!detail.contains("idle_body_ms=0"), "{detail}");
+    }
+
+    #[test]
+    fn prefix_omits_read_timeout_when_the_client_does_not_implement_one() {
+        let meta = ResponseMeta {
+            status: 200,
+            content_type: Some("text/event-stream".into()),
+            request_id: None,
+            read_timeout_ms: None,
+        };
+        let prefix = meta.prefix();
+        assert_eq!(prefix, "http=200 ct=text/event-stream");
+        assert!(!prefix.contains("read_timeout_ms"), "{prefix}");
+
+        let meta = ResponseMeta {
+            read_timeout_ms: Some(60_000),
+            ..meta
+        };
+        assert!(
+            meta.prefix().contains("read_timeout_ms=60000"),
+            "{}",
+            meta.prefix()
+        );
     }
 }

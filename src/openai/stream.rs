@@ -1,12 +1,90 @@
 use super::schema::{OaiChunk, OaiDelta};
 use crate::LlmError;
 use crate::StreamEndKind;
-use crate::stream_diag::{ResponseMeta, classify_event_stream_error};
+use crate::provider::Instant;
+use crate::stream_diag::{ResponseMeta, classify_event_stream_error, timing_detail};
 use crate::stream_handle::{BoxStream, box_stream};
 use crate::types::{ContentKind, StopReason, StreamEvent};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// Byte-level body-read clock for one streamed request.
+///
+/// Only the adapter can observe this: SSE comment/heartbeat bytes reset the
+/// underlying read timeout but produce no runtime-visible `StreamEvent`, so a
+/// runtime idle watchdog measures a different (usually larger) idle window.
+///
+/// Uses `AtomicU32` millisecond offsets (supported on wasm32) instead of
+/// storing `Instant` values. `u32::MAX` is the "no read yet" sentinel and
+/// `u32::MAX - 1` is the saturation marker: once the elapsed millisecond count
+/// would reach `CAP_MS`, the snapshot reports every timing field as
+/// unavailable instead of silently truncating (which would keep printing a
+/// growing idle value after ~49.7 days).
+#[derive(Debug)]
+struct BodyReadClock {
+    request_start: Instant,
+    last_read_ms: AtomicU32,
+}
+
+impl BodyReadClock {
+    const NO_READ: u32 = u32::MAX;
+    /// `u32::MAX - 1` milliseconds: the last offset the clock can represent.
+    const CAP_MS: u64 = (u32::MAX - 1) as u64;
+
+    fn new(request_start: Instant) -> Self {
+        Self {
+            request_start,
+            last_read_ms: AtomicU32::new(Self::NO_READ),
+        }
+    }
+
+    /// Record a successfully read body chunk.
+    fn mark_read(&self) {
+        let elapsed_ms = Self::elapsed_ms(&self.request_start);
+        let stored = elapsed_ms.map_or(Self::CAP_MS as u32, |ms| ms.min(Self::CAP_MS) as u32);
+        self.last_read_ms.store(stored, Ordering::Relaxed);
+    }
+
+    /// Milliseconds since the request was issued, `None` once saturated.
+    fn elapsed_ms(request_start: &Instant) -> Option<u64> {
+        // `as_millis()` is a u128; never truncate silently into a u32/u64.
+        let elapsed = u64::try_from(request_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        (elapsed < Self::CAP_MS).then_some(elapsed)
+    }
+
+    /// `(elapsed_ms, last_read_ms, idle_body_ms)` at failure time.
+    ///
+    /// With no body byte ever read, `last_read_ms` and `idle_body_ms` are
+    /// `None`: the elapsed time includes the response-header wait and must not
+    /// be mis-attributed to body idleness. A saturated clock yields
+    /// `(None, None, None)`.
+    fn snapshot(&self) -> (Option<u64>, Option<u64>, Option<u64>) {
+        let Some(elapsed_ms) = Self::elapsed_ms(&self.request_start) else {
+            return (None, None, None);
+        };
+        match self.last_read_ms.load(Ordering::Relaxed) {
+            Self::NO_READ => (Some(elapsed_ms), None, None),
+            // A saturated read offset makes the whole triple untrustworthy.
+            ms if ms == Self::CAP_MS as u32 => (None, None, None),
+            last => {
+                let last = u64::from(last);
+                (
+                    Some(elapsed_ms),
+                    Some(last),
+                    Some(elapsed_ms.saturating_sub(last)),
+                )
+            }
+        }
+    }
+
+    /// Compact redacted timing fragment for an incomplete-stream detail.
+    fn detail(&self) -> String {
+        let (elapsed_ms, last_read_ms, idle_body_ms) = self.snapshot();
+        timing_detail(elapsed_ms, last_read_ms, idle_body_ms)
+    }
+}
 
 /// Tracks streaming state across chunks for a single message.
 ///
@@ -232,6 +310,12 @@ fn parse_stop_reason(s: Option<&str>) -> StopReason {
 /// * `response` - The HTTP response with SSE stream
 /// * `parse_reasoning` - Whether to parse reasoning_content from deltas
 /// * `tolerant_keepalive` - Whether to silently skip non-JSON data lines (e.g. DeepSeek keepalives)
+/// * `request_start` - When the HTTP request was issued, used to report
+///   `elapsed_ms`. Header latency is included.
+/// * `read_timeout` - Effective client body-read idle timeout, recorded in the
+///   detail so a failure can be compared against the configured limit. `None`
+///   when the platform's HTTP client does not implement one (wasm); the field
+///   is then omitted from the detail.
 ///
 /// # Returns
 /// A boxed stream of StreamEvent results
@@ -239,12 +323,25 @@ pub fn parse_stream(
     response: reqwest::Response,
     parse_reasoning: bool,
     tolerant_keepalive: bool,
+    request_start: Instant,
+    read_timeout: Option<Duration>,
 ) -> BoxStream {
     use eventsource_stream::Eventsource;
     use futures::stream::{StreamExt, once};
 
-    let meta = ResponseMeta::capture(&response);
-    let stream = response.bytes_stream();
+    let meta = ResponseMeta::capture_with_read_timeout(&response, read_timeout);
+    // Record the instant of every successful body read *before* SSE decoding:
+    // heartbeat/comment frames reset the transport read timeout but produce no
+    // StreamEvent, so this is the only layer that can measure read idle time.
+    let read_clock = Arc::new(BodyReadClock::new(request_start));
+    let stream = response.bytes_stream().inspect({
+        let read_clock = read_clock.clone();
+        move |chunk| {
+            if chunk.is_ok() {
+                read_clock.mark_read();
+            }
+        }
+    });
     let event_stream = stream.eventsource();
 
     let mut state = OaiStreamState::new();
@@ -260,6 +357,7 @@ pub fn parse_stream(
                 let finish_reason_seen = finish_reason_seen.clone();
                 let stop_received = stop_received.clone();
                 let meta = meta.clone();
+                let read_clock = read_clock.clone();
                 move |event_result| {
                     let mut results = Vec::new();
 
@@ -284,8 +382,9 @@ pub fn parse_stream(
                                             finish_reason: None,
                                             kind: StreamEndKind::DoneWithoutFinishReason,
                                             detail: Some(format!(
-                                                "{} saw_done=true usage=absent",
-                                                meta.prefix()
+                                                "{} {} saw_done=true usage=absent",
+                                                meta.prefix(),
+                                                read_clock.detail()
                                             )),
                                         }));
                                         state.message_stop_sent = true;
@@ -342,7 +441,8 @@ pub fn parse_stream(
                             // persisted Display text must distinguish upstream
                             // protocol omissions from transport failures.
                             let (kind, cause) = classify_event_stream_error(&e);
-                            let detail = format!("{} {}", meta.prefix(), cause);
+                            let detail =
+                                format!("{} {} {}", meta.prefix(), read_clock.detail(), cause);
                             tracing::warn!(
                                 kind = %kind,
                                 detail = %detail,
@@ -372,6 +472,7 @@ pub fn parse_stream(
             })
             .chain(
                 once(async move {
+                    let read_clock = read_clock.clone();
                     if stop_received.load(Ordering::SeqCst) {
                         None
                     } else {
@@ -379,11 +480,46 @@ pub fn parse_stream(
                             received_chunks: chunk_count.load(Ordering::SeqCst),
                             finish_reason: finish_reason_seen.lock().unwrap().clone(),
                             kind: StreamEndKind::EofWithoutDone,
-                            detail: Some(format!("{} saw_done=false", meta.prefix())),
+                            detail: Some(format!(
+                                "{} {} saw_done=false",
+                                meta.prefix(),
+                                read_clock.detail()
+                            )),
                         }))
                     }
                 })
                 .filter_map(|opt| async move { opt }),
             ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saturated_read_offset_reports_unavailable_timing() {
+        let clock = BodyReadClock {
+            request_start: Instant::now(),
+            last_read_ms: AtomicU32::new(BodyReadClock::CAP_MS as u32),
+        };
+        assert_eq!(clock.snapshot(), (None, None, None));
+        assert_eq!(
+            clock.detail(),
+            "elapsed_ms=unavailable last_read_ms=none idle_body_ms=unavailable"
+        );
+    }
+
+    #[test]
+    fn no_read_never_reports_a_body_idle_window() {
+        let clock = BodyReadClock::new(Instant::now());
+        let (elapsed, last, idle) = clock.snapshot();
+        assert!(
+            elapsed.is_some(),
+            "elapsed is still valid before saturation"
+        );
+        assert_eq!(last, None);
+        assert_eq!(idle, None, "unread body time is not body idle time");
+        assert!(clock.detail().contains("idle_body_ms=unavailable"));
+    }
 }

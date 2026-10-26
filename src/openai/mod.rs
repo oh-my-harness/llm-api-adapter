@@ -85,6 +85,9 @@ pub struct OpenAIProvider {
     thinking_scheme: ThinkingScheme,
     max_tokens_scheme: MaxTokensScheme,
     capabilities: crate::provider::ProviderCapabilities,
+    /// Effective body-read idle timeout, recorded in stream diagnostics so a
+    /// persisted failure can be compared against the configured limit.
+    read_timeout: Duration,
 }
 
 /// Builder for [`OpenAIProvider`] with fluent configuration API.
@@ -369,7 +372,22 @@ impl OpenAIProvider {
         let status_code = Some(response.status().as_u16());
         let model = oai_req.model.clone();
         let tolerant = req.ext.tolerant_keepalive || self.tolerant_keepalive;
-        let stream = stream::parse_stream(response, req.ext.parse_reasoning_content, tolerant);
+        // The native client implements `read_timeout`; reqwest's wasm backend
+        // does not, so the detail must not claim an effective value there.
+        #[cfg(not(target_arch = "wasm32"))]
+        let effective_read_timeout = Some(self.read_timeout);
+        #[cfg(target_arch = "wasm32")]
+        let effective_read_timeout = {
+            let _ = self.read_timeout;
+            None
+        };
+        let stream = stream::parse_stream(
+            response,
+            req.ext.parse_reasoning_content,
+            tolerant,
+            start,
+            effective_read_timeout,
+        );
         Ok(StreamHandle::with_meta(
             model,
             stream,
@@ -664,6 +682,7 @@ impl OpenAIProviderBuilder {
             parse_reasoning_content: self.parse_reasoning_content,
             tolerant_keepalive: self.tolerant_keepalive,
             capabilities: self.capabilities,
+            read_timeout,
         }
     }
 }
