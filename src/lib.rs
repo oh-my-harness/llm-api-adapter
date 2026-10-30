@@ -3,11 +3,13 @@ pub mod deepseek;
 mod error;
 pub mod openai;
 pub mod provider;
+mod stream_diag;
 pub mod stream_handle;
 pub mod types;
 
 pub use error::LlmError;
 pub use provider::{EmbeddingProvider, Provider, ProviderCapabilities};
+pub use stream_diag::StreamEndKind;
 pub use stream_handle::StreamHandle;
 pub use types::*;
 

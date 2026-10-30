@@ -887,3 +887,92 @@ async fn documents_disabled_by_default_and_gate_opt_in() {
         "opt-in must dispatch"
     );
 }
+
+/// Every 5xx response describes an outcome-unknown failure: the request may
+/// have been processed upstream, so resending it can replay a generation.
+/// They must all map to `ServerError`, never to `InvalidRequest` (which the
+/// Runtime's provider-error hook treats as repairable-and-retryable).
+/// 529 keeps its dedicated `Overloaded` semantics.
+#[tokio::test]
+async fn http_error_classification_matrix() {
+    let is_server_error = |err: &LlmError| matches!(err, LlmError::ServerError(_));
+    let is_invalid_request = |err: &LlmError| matches!(err, LlmError::InvalidRequest(_));
+    let is_rate_limit = |err: &LlmError| matches!(err, LlmError::RateLimit { .. });
+
+    let cases = [
+        (
+            400u16,
+            is_invalid_request as fn(&LlmError) -> bool,
+            "trusted input rejection",
+        ),
+        (429u16, is_rate_limit as fn(&LlmError) -> bool, "rate limit"),
+        (500u16, is_server_error, "server error"),
+        (502u16, is_server_error, "bad gateway"),
+        (
+            503u16,
+            is_server_error as fn(&LlmError) -> bool,
+            "service unavailable",
+        ),
+        (
+            504u16,
+            is_server_error as fn(&LlmError) -> bool,
+            "gateway timeout",
+        ),
+        (
+            520u16,
+            is_server_error as fn(&LlmError) -> bool,
+            "cloudflare unknown",
+        ),
+        (
+            529u16,
+            |err: &LlmError| matches!(err, LlmError::Overloaded { .. }),
+            "overloaded",
+        ),
+        (
+            599u16,
+            is_server_error as fn(&LlmError) -> bool,
+            "unknown 5xx",
+        ),
+    ];
+
+    for (status, expected, what) in cases {
+        let server = MockServer::start().await;
+        common::mock_error(&server, status, r#"{"error":{"message":"probe"}}"#).await;
+
+        let req = ChatRequest::builder("gpt-4o", 512)
+            .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+            .build();
+
+        let err = provider(&server).chat(&req).await.unwrap_err();
+        eprintln!("CLASSIFY status={status} err={err:?}");
+        assert!(
+            expected(&err),
+            "HTTP {status} must classify as {what}, got {err:?}",
+            status = status,
+            err = err
+        );
+    }
+}
+
+/// HTTP 408 (Request Timeout) regression: it used to fold into
+/// `InvalidRequest`, which the Runtime's provider-error hook treats as
+/// repairable-and-retryable — an unsafe resend of an unknown-outcome
+/// request. It now maps to `Timeout` (no new public variant, no retry at
+/// any Runtime layer: the loop never retries `Timeout`, the hook branch
+/// only matches `InvalidRequest`, and the runner guard escalates on
+/// unknown outcomes).
+#[tokio::test]
+async fn http_408_maps_to_timeout_not_invalid_request() {
+    let server = MockServer::start().await;
+    common::mock_error(&server, 408, r#"{"error":{"message":"probe"}}"#).await;
+
+    let req = ChatRequest::builder("gpt-4o", 512)
+        .message(Message::User(vec![RequestContent::Text("Hi".into())]))
+        .build();
+
+    let err = provider(&server).chat(&req).await.unwrap_err();
+    assert!(
+        matches!(err, LlmError::Timeout),
+        "HTTP 408 must classify as Timeout, got {err:?}"
+    );
+}

@@ -667,7 +667,7 @@ async fn run_chat(
 ) {
     let path = dir.join(filename);
     print!("[{}] -> {} ... ", cfg.name, display_path(&path));
-    let url = format!("{}{}", cfg.base_url.trim_end_matches('/'), &cfg.chat_path);
+    let url = format!("{}{}", cfg.base_url.trim_end_matches('/'), cfg.chat_path);
 
     let resp = match client
         .post(&url)
@@ -711,7 +711,7 @@ async fn run_stream(
 ) {
     let path = dir.join(filename);
     print!("[{}] -> {} (stream) ... ", cfg.name, display_path(&path));
-    let url = format!("{}{}", cfg.base_url.trim_end_matches('/'), &cfg.chat_path);
+    let url = format!("{}{}", cfg.base_url.trim_end_matches('/'), cfg.chat_path);
 
     let resp = match client
         .post(&url)

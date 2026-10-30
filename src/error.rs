@@ -64,12 +64,24 @@ pub enum LlmError {
     ///   finish reason arrived — the most severe case (model never signalled
     ///   completion). `Some` means the model did finish but usage/stream
     ///   termination was lost.
+    /// - `kind`: which layer observed the abnormal end. See
+    ///   [`crate::StreamEndKind`]; this is the field that distinguishes an
+    ///   upstream protocol omission from a client-observed transport failure.
+    /// - `detail`: redacted diagnostic detail (HTTP status, content type,
+    ///   request id, error category flags and source chain). Never contains
+    ///   request headers, prompts or response bodies.
     #[error(
-        "stream incomplete: {received_chunks} chunks received, finish_reason={finish_reason:?}"
+        "stream incomplete ({kind}): {received_chunks} chunks received, finish_reason={finish_reason:?}{suffix}",
+        suffix = match .detail {
+            Some(detail) => format!(", detail={detail}"),
+            None => String::new(),
+        }
     )]
     StreamIncomplete {
         received_chunks: u32,
         finish_reason: Option<String>,
+        kind: crate::StreamEndKind,
+        detail: Option<String>,
     },
 
     /// HTTP transport failure.

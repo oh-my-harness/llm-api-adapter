@@ -1,3 +1,5 @@
+mod common;
+
 use llm_adapter::{EmbeddingProvider, LlmError, openai::OpenAIProvider, types::*};
 use wiremock::MockServer;
 
@@ -116,4 +118,30 @@ async fn embedding_error_429_maps_to_rate_limit() {
 
     let err = provider(&server).embed(&req).await.unwrap_err();
     assert!(matches!(err, LlmError::RateLimit { retry_after: _ }));
+}
+
+#[tokio::test]
+async fn http_error_classification_matches_chat() {
+    // Embeddings share the chat status mapping: unknown-outcome 5xx must be
+    // ServerError (never InvalidRequest), 400 stays a trusted rejection.
+    for (status, expect_server_error) in [(504u16, true), (520, true), (599, true), (400, false)] {
+        let server = MockServer::start().await;
+        common::mock_embeddings_error(&server, status).await;
+
+        let req = EmbeddingRequest::builder("text-embedding-3-small")
+            .inputs(["hello", "world"])
+            .build();
+        let err = provider(&server).embed(&req).await.unwrap_err();
+        if expect_server_error {
+            assert!(
+                matches!(err, LlmError::ServerError(_)),
+                "HTTP {status}: {err:?}"
+            );
+        } else {
+            assert!(
+                matches!(err, LlmError::InvalidRequest(_)),
+                "HTTP {status}: {err:?}"
+            );
+        }
+    }
 }

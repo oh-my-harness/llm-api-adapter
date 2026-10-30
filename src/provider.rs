@@ -156,6 +156,10 @@ pub(crate) use web_time::Instant;
 /// targets the `Send` future contract is unchanged.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+// `async_trait` adds `#[must_use]` to the generated Result-returning futures;
+// newer Clippy reports that as a double must_use. Keep the attribute local to
+// these trait expansions instead of suppressing the lint crate-wide.
+#[allow(clippy::double_must_use)]
 pub trait Provider: Send + Sync {
     /// Return the static capability flags for this provider.
     ///
@@ -192,6 +196,8 @@ pub trait Provider: Send + Sync {
 /// On `wasm32` returned futures are `!Send` — same contract as [`Provider`].
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+// Same `async_trait` + newer-Clippy interaction as `Provider`.
+#[allow(clippy::double_must_use)]
 pub trait EmbeddingProvider: Send + Sync {
     /// Generate embeddings for the request input batch.
     async fn embed(&self, req: &EmbeddingRequest) -> Result<EmbeddingResponse, LlmError>;
