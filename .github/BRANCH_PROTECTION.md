@@ -17,7 +17,8 @@ complete request body for GitHub's "Update a repository ruleset" endpoint. It:
 
 - makes the ruleset active;
 - keeps deletion, non-fast-forward, and required-linear-history protection;
-- keeps the pull request rule and its rebase-only merge method;
+- keeps every existing pull request rule parameter and the rebase-only merge
+  method;
 - requires the existing `Check`, `wasm32 check`, and `Coverage` checks;
 - sets `bypass_actors` to an empty array.
 
@@ -48,7 +49,7 @@ Read the same ruleset ID and inspect the enforcement state, bypass actors, and
 required check contexts:
 
 ```sh
-gh api --method GET repos/oh-my-harness/llm-api-adapter/rulesets/17346231 --jq '{enforcement, bypass_actors, required_checks: ([.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | sort)}'
+gh api --method GET repos/oh-my-harness/llm-api-adapter/rulesets/17346231 --jq '{enforcement, bypass_actors, pull_request: ([.rules[] | select(.type == "pull_request") | .parameters][0]), required_checks: ([.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | sort)}'
 ```
 
 The relevant part of the response must show:
@@ -57,6 +58,20 @@ The relevant part of the response must show:
 {
   "enforcement": "active",
   "bypass_actors": [],
+  "pull_request": {
+    "allowed_merge_methods": ["rebase"],
+    "dismiss_stale_reviews_on_push": false,
+    "dismissal_restriction": {
+      "allowed_actors": [],
+      "enabled": false
+    },
+    "require_code_owner_review": false,
+    "require_extra_approval_for_unattributed_changes": true,
+    "require_last_push_approval": false,
+    "required_approving_review_count": 0,
+    "required_review_thread_resolution": false,
+    "required_reviewers": []
+  },
   "required_checks": [
     "Check",
     "Coverage",
